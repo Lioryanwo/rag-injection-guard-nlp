@@ -27,8 +27,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 # טעינת .env
-load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
-
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 
 # ── פרמטרים ברירת מחדל ────────────────────────────────────────────────────────
 
@@ -283,10 +282,10 @@ class ReverseQADefense:
             model=self.openai_model,
             messages=[
                 {"role": "system", "content": "You generate answerable retrieval-evaluation questions."},
-                {"role": "user",   "content": prompt},
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.0,
         )
+
         content = resp.choices[0].message.content or "[]"
         return self._parse_questions(content)
 
@@ -460,7 +459,7 @@ def main() -> None:
         if not Path(input_path).exists():
             print(f"\n[SKIP] {input_path} לא קיים")
             continue
-
+            
         print(f"\n{'─'*60}")
         print(f"Retriever: {ret.upper()}")
         print(f"קורא: {input_path}")
@@ -485,6 +484,9 @@ def main() -> None:
 
             if i % 100 == 0:
                 print(f"  {i}/{total} queries | spoof_top1_so_far={spoof_top1_count/i:.3f}")
+
+            if i % 10 == 0:
+                print(f"  {i}/{total} queries | spoof_top1_so_far={spoof_top1_count/i:.3f}", flush=True)    
 
         # שמור תוצאות
         _save_json(output_path, defended)

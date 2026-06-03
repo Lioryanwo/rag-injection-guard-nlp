@@ -520,7 +520,7 @@ def main() -> None:
     logger.info(f"Initializing Attack Generation. Mode: {args.attack_mode}")
     logger.info(f"Embedding Model: {args.embedding_model}")
     logger.info(f"Configuration: Generating {candidates_per_style} candidates per style, keeping top {args.keep_per_style}")
-    logger.info(f"Active Attack Families: {families}")
+    # logger.info(f"Active Attack Families: {families}")
 
     embedder = SentenceTransformer(args.embedding_model)
 

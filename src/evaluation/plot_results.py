@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import matplotlib
 matplotlib.use("Agg")
@@ -36,49 +36,100 @@ COLORS = {
     "Clean Top-5":             "#2ecc71",
     "Attack Naive 5/20":       "#f39c12",
     "No-query filter":         "#95a5a6",
-    "Query-aware defense":     "#2980b9",
+    "Reverse QA Defense":      "#2980b9",
     "Attack Top-20 (ceiling)": "#e74c3c",
     "Clean + Defense":         "#1a9850",
 }
 
-# ── File name mapping (matches actual pipeline output) ────────────────────────
+# ── File mapping ──────────────────────────────────────────────────────────────
+# Reverse QA writes {ret}_defense_metrics.json and {ret}_defense_results.json.
 METHOD_FILES = {
     "Clean Top-5":             "{ret}_baseline_metrics.json",
     "Attack Top-20 (ceiling)": "{ret}_attack_top20_metrics.json",
     "Attack Naive 5/20":       "{ret}_attack_naive_top5_metrics.json",
     "No-query filter":         "{ret}_no_query_metrics.json",
-    "Query-aware defense":     "{ret}_defense_metrics.json",
+    "Reverse QA Defense":      "{ret}_defense_metrics.json",
     "Clean + Defense":         "{ret}_baseline_defense_metrics.json",
+}
+
+RESULT_FILES = {
+    "Attack Naive 5/20":       "{ret}_attack_naive_top5_results.json",
+    "Reverse QA Defense":      "{ret}_defense_results.json",
 }
 
 SPOOF_METHODS = {
     "Attack Top-20 (ceiling)",
     "Attack Naive 5/20",
     "No-query filter",
-    "Query-aware defense",
+    "Reverse QA Defense",
 }
 
 RECALL_ORDER = [
     "Clean Top-5",
     "Attack Naive 5/20",
     "No-query filter",
-    "Query-aware defense",
+    "Reverse QA Defense",
 ]
 
 SPOOF_ORDER = [
     "Attack Top-20 (ceiling)",
     "Attack Naive 5/20",
     "No-query filter",
-    "Query-aware defense",
+    "Reverse QA Defense",
+]
+
+OVERALL_SPOOF_ORDER = [
+    "Attack Naive 5/20",
+    "Reverse QA Defense",
 ]
 
 
-def _load(path: Path) -> Optional[Dict]:
+def _load(path: Path) -> Optional[Any]:
     if not path.exists():
         print(f"  [missing] {path.name}")
         return None
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _safe_float(x: Any) -> Optional[float]:
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+
+def _metric(m: Optional[Dict], *keys: str) -> Optional[float]:
+    if not isinstance(m, dict):
+        return None
+    for k in keys:
+        v = _safe_float(m.get(k))
+        if v is not None:
+            return v
+    return None
+
+
+def _overall_top1_spoof_from_results(results_path: Path) -> Optional[float]:
+    """Compute Top-1 spoof rate over ALL queries from a results JSON file."""
+    obj = _load(results_path)
+    if not isinstance(obj, dict):
+        return None
+
+    total = 0
+    spoof_top1 = 0
+    for _qid, ranked in obj.items():
+        if not isinstance(ranked, list) or not ranked:
+            continue
+        top = ranked[0]
+        if not isinstance(top, dict):
+            continue
+        total += 1
+        if bool(top.get("is_spoof", False)):
+            spoof_top1 += 1
+
+    return round(spoof_top1 / total, 4) if total else None
 
 
 def _bar_label(ax, bars, fontsize=11, pad=0.015):
@@ -95,26 +146,28 @@ def _bar_label(ax, bars, fontsize=11, pad=0.015):
             )
 
 
-def plot_recall(data: Dict[str, List], output: Path) -> None:
-    methods  = RECALL_ORDER
-    n        = len(methods)
-    fig, ax  = plt.subplots(figsize=(12, 6))
-    x        = np.arange(len(RETRIEVERS))
-    total_w  = 0.72
-    w        = total_w / n
-    offsets  = np.linspace(-total_w / 2 + w / 2, total_w / 2 - w / 2, n)
+def _grouped_bar(data: Dict[str, List], methods: List[str], ylabel: str,
+                 title: str, output: Path, ylim_top: float = 1.15) -> None:
+    n       = len(methods)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    x       = np.arange(len(RETRIEVERS))
+    total_w = 0.72
+    w       = total_w / n
+    offsets = np.linspace(-total_w / 2 + w / 2, total_w / 2 - w / 2, n)
 
     for off, method in zip(offsets, methods):
-        vals = [v if v is not None else 0.0 for v in data[method]]
-        bars = ax.bar(x + off, vals, width=w * 0.88,
-                      color=COLORS[method], alpha=0.90, label=method, zorder=3)
+        vals = [v if v is not None else 0.0 for v in data.get(method, [])]
+        bars = ax.bar(
+            x + off, vals, width=w * 0.88,
+            color=COLORS[method], alpha=0.90, label=method, zorder=3,
+        )
         _bar_label(ax, bars)
 
     ax.set_xticks(x)
     ax.set_xticklabels(RETRIEVER_LABELS, fontsize=13)
-    ax.set_ylim(0, 1.10)
-    ax.set_ylabel("Recall@5", fontsize=14)
-    ax.set_title("Recall@5 Under Attack  —  300 queries", fontsize=16, pad=14)
+    ax.set_ylim(0, ylim_top)
+    ax.set_ylabel(ylabel, fontsize=13)
+    ax.set_title(title, fontsize=16, pad=14)
     ax.legend(loc="upper right", framealpha=0.9, fontsize=11, ncol=2)
     for xi in x[1:]:
         ax.axvline(xi - 0.5, color="#cccccc", linewidth=1.0, zorder=1)
@@ -123,48 +176,53 @@ def plot_recall(data: Dict[str, List], output: Path) -> None:
     fig.savefig(output, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved {output.name}")
+
+
+def plot_recall(data: Dict[str, List], output: Path) -> None:
+    _grouped_bar(
+        data=data,
+        methods=RECALL_ORDER,
+        ylabel="Recall@5",
+        title="Recall@5 Under Attack",
+        output=output,
+        ylim_top=1.10,
+    )
 
 
 def plot_spoof_win(data: Dict[str, List], output: Path) -> None:
-    methods  = SPOOF_ORDER
-    n        = len(methods)
-    fig, ax  = plt.subplots(figsize=(12, 6))
-    x        = np.arange(len(RETRIEVERS))
-    total_w  = 0.72
-    w        = total_w / n
-    offsets  = np.linspace(-total_w / 2 + w / 2, total_w / 2 - w / 2, n)
-
-    for off, method in zip(offsets, methods):
-        vals = [v if v is not None else 0.0 for v in data[method]]
-        bars = ax.bar(x + off, vals, width=w * 0.88,
-                      color=COLORS[method], alpha=0.90, label=method, zorder=3)
-        _bar_label(ax, bars)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(RETRIEVER_LABELS, fontsize=13)
-    ax.set_ylim(0, 1.15)
-    ax.set_ylabel("Top-1 Spoof Win Rate  ↓ lower is better", fontsize=13)
-    ax.set_title("Spoof Win Rate  —  300 attacked queries", fontsize=16, pad=14)
-    ax.legend(loc="upper right", framealpha=0.9, fontsize=11, ncol=2)
-    for xi in x[1:]:
-        ax.axvline(xi - 0.5, color="#cccccc", linewidth=1.0, zorder=1)
-    ax.set_axisbelow(True)
-    fig.tight_layout(pad=2.0)
-    fig.savefig(output, dpi=160, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved {output.name}")
+    _grouped_bar(
+        data=data,
+        methods=SPOOF_ORDER,
+        ylabel="Top-1 Spoof Win Rate on Attacked Queries ↓ lower is better",
+        title="Spoof Win Rate — attacked queries only",
+        output=output,
+        ylim_top=1.15,
+    )
 
 
-def plot_summary(recall_data: Dict, spoof_data: Dict, output: Path) -> None:
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
-    fig.suptitle("RAG Spoof Attack & Defense — Summary", fontsize=18, y=1.01)
+def plot_overall_spoof_win(data: Dict[str, List], output: Path) -> None:
+    _grouped_bar(
+        data=data,
+        methods=OVERALL_SPOOF_ORDER,
+        ylabel="Overall Top-1 Spoof Rate ↓ lower is better",
+        title="Overall Top-1 Spoof Rate — all evaluated queries",
+        output=output,
+        ylim_top=1.15,
+    )
+
+
+def plot_summary(recall_data: Dict, spoof_data: Dict, overall_spoof_data: Dict, output: Path) -> None:
+    fig, axes = plt.subplots(3, 3, figsize=(15, 11))
+    fig.suptitle("RAG Spoof Attack & Reverse QA Defense — Summary", fontsize=18, y=1.01)
 
     recall_methods = RECALL_ORDER
     spoof_methods  = SPOOF_ORDER
-    short_r = ["Clean", "Naive 5/20", "No-query", "Defense"]
-    short_s = ["Attack\n(ceiling)", "Naive 5/20", "No-query", "Defense"]
+    overall_methods = OVERALL_SPOOF_ORDER
+    short_r = ["Clean", "Naive 5/20", "No-query", "RevQA"]
+    short_s = ["Attack\nceiling", "Naive 5/20", "No-query", "RevQA"]
+    short_o = ["Attack", "RevQA"]
 
-    for col, (ret, label) in enumerate(zip(RETRIEVERS, RETRIEVER_LABELS)):
+    for col, (_ret, label) in enumerate(zip(RETRIEVERS, RETRIEVER_LABELS)):
         # Row 0: Recall
         ax = axes[0][col]
         vals   = [recall_data[m][col] or 0.0 for m in recall_methods]
@@ -174,31 +232,43 @@ def plot_summary(recall_data: Dict, spoof_data: Dict, output: Path) -> None:
         ax.set_ylim(0, 1.10)
         ax.set_title(f"{label}\nRecall@5", fontsize=13)
         ax.set_ylabel("Recall@5" if col == 0 else "", fontsize=12)
-        ax.tick_params(axis="x", labelsize=10)
+        ax.tick_params(axis="x", labelsize=9)
         ax.set_axisbelow(True)
 
-        # Row 1: Spoof win rate
+        # Row 1: attacked-query spoof win rate
         ax = axes[1][col]
         vals   = [spoof_data[m][col] or 0.0 for m in spoof_methods]
         colors = [COLORS[m] for m in spoof_methods]
         bars   = ax.bar(short_s, vals, color=colors, alpha=0.90, zorder=3, width=0.55)
         _bar_label(ax, bars, fontsize=10, pad=0.015)
         ax.set_ylim(0, 1.15)
-        ax.set_title(f"{label}\nTop-1 Spoof Win Rate ↓", fontsize=13)
-        ax.set_ylabel("Spoof Win Rate" if col == 0 else "", fontsize=12)
+        ax.set_title(f"{label}\nAttacked-query Spoof Win ↓", fontsize=13)
+        ax.set_ylabel("Spoof Win" if col == 0 else "", fontsize=12)
+        ax.tick_params(axis="x", labelsize=8)
+        ax.set_axisbelow(True)
+
+        # Row 2: overall top1 spoof rate from result files
+        ax = axes[2][col]
+        vals   = [overall_spoof_data[m][col] or 0.0 for m in overall_methods]
+        colors = [COLORS[m] for m in overall_methods]
+        bars   = ax.bar(short_o, vals, color=colors, alpha=0.90, zorder=3, width=0.55)
+        _bar_label(ax, bars, fontsize=10, pad=0.015)
+        ax.set_ylim(0, 1.15)
+        ax.set_title(f"{label}\nOverall Top-1 Spoof ↓", fontsize=13)
+        ax.set_ylabel("Overall Spoof" if col == 0 else "", fontsize=12)
         ax.tick_params(axis="x", labelsize=9)
         ax.set_axisbelow(True)
 
     legend_patches = [
         mpatches.Patch(color=COLORS["Clean Top-5"],             label="Clean baseline"),
-        mpatches.Patch(color=COLORS["Attack Top-20 (ceiling)"], label="Attack (ceiling)"),
-        mpatches.Patch(color=COLORS["Attack Naive 5/20"],       label="Naive 5/20"),
+        mpatches.Patch(color=COLORS["Attack Top-20 (ceiling)"], label="Attack ceiling"),
+        mpatches.Patch(color=COLORS["Attack Naive 5/20"],       label="Attack naive"),
         mpatches.Patch(color=COLORS["No-query filter"],         label="No-query filter"),
-        mpatches.Patch(color=COLORS["Query-aware defense"],     label="Query-aware defense"),
+        mpatches.Patch(color=COLORS["Reverse QA Defense"],      label="Reverse QA Defense"),
     ]
     fig.legend(handles=legend_patches, loc="lower center", ncol=5,
-               fontsize=11, framealpha=0.9, bbox_to_anchor=(0.5, -0.04))
-    fig.tight_layout(pad=2.5)
+               fontsize=11, framealpha=0.9, bbox_to_anchor=(0.5, -0.03))
+    fig.tight_layout(pad=2.2)
     fig.savefig(output, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved {output.name}")
@@ -212,28 +282,13 @@ def plot_threshold_sweep(sweep_rows: List[Dict], output: Path) -> None:
 
     fig, ax = plt.subplots(figsize=(9, 5))
     ax.plot(thresholds, recall_vals, marker="o", linewidth=2.5, markersize=8,
-            color=COLORS["Query-aware defense"], label="Recall@5", zorder=4)
+            color=COLORS["Reverse QA Defense"], label="Recall@5", zorder=4)
     ax.plot(thresholds, spoof_vals, marker="s", linewidth=2.5, markersize=8,
             color=COLORS["Attack Top-20 (ceiling)"], label="Top-1 Spoof Win Rate", zorder=4)
     ax.axvline(chosen_th, color="#555555", linewidth=2.0,
                linestyle="--", label=f"Chosen threshold = {chosen_th}", zorder=3)
     ax.axvspan(0.0, chosen_th, alpha=0.06,
-               color=COLORS["Query-aware defense"], zorder=1)
-
-    try:
-        idx = thresholds.index(chosen_th)
-        ax.annotate(f"Recall={recall_vals[idx]:.2f}",
-                    xy=(chosen_th, recall_vals[idx]),
-                    xytext=(chosen_th + 0.06, recall_vals[idx] + 0.04),
-                    fontsize=11, color=COLORS["Query-aware defense"],
-                    arrowprops=dict(arrowstyle="->", color=COLORS["Query-aware defense"]))
-        ax.annotate(f"Spoof={spoof_vals[idx]:.2f}",
-                    xy=(chosen_th, spoof_vals[idx]),
-                    xytext=(chosen_th + 0.06, spoof_vals[idx] - 0.06),
-                    fontsize=11, color=COLORS["Attack Top-20 (ceiling)"],
-                    arrowprops=dict(arrowstyle="->", color=COLORS["Attack Top-20 (ceiling)"]))
-    except ValueError:
-        pass
+               color=COLORS["Reverse QA Defense"], zorder=1)
 
     ax.set_xlabel("Suspicion Threshold", fontsize=14)
     ax.set_ylabel("Score", fontsize=14)
@@ -257,47 +312,68 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     print("Loading metrics…")
-    recall_data: Dict[str, List] = {m: [] for m in METHOD_FILES}
-    spoof_data:  Dict[str, List] = {m: [] for m in METHOD_FILES if m in SPOOF_METHODS}
+    recall_data: Dict[str, List[Optional[float]]] = {m: [] for m in METHOD_FILES}
+    spoof_data:  Dict[str, List[Optional[float]]] = {m: [] for m in METHOD_FILES if m in SPOOF_METHODS}
+    overall_spoof_data: Dict[str, List[Optional[float]]] = {m: [] for m in OVERALL_SPOOF_ORDER}
 
     for ret in RETRIEVERS:
         for method, tmpl in METHOD_FILES.items():
             m = _load(args.results_dir / tmpl.format(ret=ret))
-            recall_data[method].append(m.get("recall@5")           if m else None)
+            recall_data[method].append(_metric(m, "recall@5", "recall_at_5"))
             if method in spoof_data:
-                spoof_data[method].append(m.get("top1_spoof_win_rate") if m else None)
+                spoof_data[method].append(_metric(m, "top1_spoof_win_rate", "spoof_win"))
+
+        # Overall Top-1 spoof rate is computed from result files, not from attacked-query metrics.
+        for method in OVERALL_SPOOF_ORDER:
+            tmpl = RESULT_FILES.get(method)
+            if tmpl is None:
+                overall_spoof_data[method].append(None)
+                continue
+            overall = _overall_top1_spoof_from_results(args.results_dir / tmpl.format(ret=ret))
+            overall_spoof_data[method].append(overall)
 
     print("\nGenerating plots…")
-    plot_recall(recall_data,  args.output_dir / "recall_under_attack.png")
+    plot_recall(recall_data, args.output_dir / "recall_under_attack.png")
+    plot_spoof_win(spoof_data, args.output_dir / "spoof_win_rate_attacked_queries.png")
+    # Backward-compatible filename: this now also uses attacked-query spoof metrics.
     plot_spoof_win(spoof_data, args.output_dir / "spoof_win_rate.png")
-    plot_summary(recall_data, spoof_data, args.output_dir / "summary.png")
+    plot_overall_spoof_win(overall_spoof_data, args.output_dir / "overall_top1_spoof_rate.png")
+    plot_summary(recall_data, spoof_data, overall_spoof_data, args.output_dir / "summary.png")
 
     sweep = _load(args.results_dir / "minilm_threshold_sweep.json")
-    if sweep and sweep.get("sweep"):
+    if sweep and isinstance(sweep, dict) and sweep.get("sweep"):
         plot_threshold_sweep(sweep["sweep"], args.output_dir / "threshold_sweep.png")
     else:
         print("  [skip] threshold sweep not found")
 
-    # Console summary
-    print("\n" + "=" * 65)
+    print("\n" + "=" * 76)
     print(f"{'Method':<28} {'MiniLM':>9} {'BM25':>9} {'Hybrid':>9}  Recall@5")
-    print("-" * 65)
+    print("-" * 76)
     for method in RECALL_ORDER:
         vals = recall_data[method]
         row  = f"{method:<28}"
         for v in vals:
             row += f"  {v:.3f}" if v is not None else "      —  "
         print(row)
-    print()
-    print(f"{'Method':<28} {'MiniLM':>9} {'BM25':>9} {'Hybrid':>9}  Spoof Win Rate")
-    print("-" * 65)
+
+    print("\n" + f"{'Method':<28} {'MiniLM':>9} {'BM25':>9} {'Hybrid':>9}  Attacked-query spoof win")
+    print("-" * 76)
     for method in SPOOF_ORDER:
         vals = spoof_data[method]
         row  = f"{method:<28}"
         for v in vals:
             row += f"  {v:.3f}" if v is not None else "      —  "
         print(row)
-    print("=" * 65)
+
+    print("\n" + f"{'Method':<28} {'MiniLM':>9} {'BM25':>9} {'Hybrid':>9}  Overall Top-1 spoof")
+    print("-" * 76)
+    for method in OVERALL_SPOOF_ORDER:
+        vals = overall_spoof_data[method]
+        row  = f"{method:<28}"
+        for v in vals:
+            row += f"  {v:.3f}" if v is not None else "      —  "
+        print(row)
+    print("=" * 76)
 
 
 if __name__ == "__main__":

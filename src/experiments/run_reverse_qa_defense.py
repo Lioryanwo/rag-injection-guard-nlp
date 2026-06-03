@@ -269,25 +269,33 @@ class ReverseQADefense:
 
     def _generate_openai(self, text: str) -> List[str]:
         from openai import OpenAI
+
         if self._openai_client is None:
             api_key = os.getenv("OPENAI_API_KEY")
             self._openai_client = OpenAI(api_key=api_key)
+
         prompt = (
             f"Generate exactly {self.num_questions} short, concrete questions "
             f"that can be answered directly from the document. "
             f"Avoid vague or generic questions. "
             f"Return only a JSON list of strings.\n\nDocument:\n{text[:3000]}"
         )
-        resp = self._openai_client.chat.completions.create(
-            model=self.openai_model,
-            messages=[
-                {"role": "system", "content": "You generate answerable retrieval-evaluation questions."},
-                {"role": "user", "content": prompt},
-            ],
-        )
 
-        content = resp.choices[0].message.content or "[]"
-        return self._parse_questions(content)
+        try:
+            resp = self._openai_client.chat.completions.create(
+                model=self.openai_model,
+                messages=[
+                    {"role": "system", "content": "You generate answerable retrieval-evaluation questions."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+
+            content = resp.choices[0].message.content or "[]"
+            return self._parse_questions(content)
+
+        except Exception as e:
+            print(f"[OpenAI ERROR] {e}", flush=True)
+            return self._generate_heuristic(text)
 
     def _generate_heuristic(self, text: str) -> List[str]:
         import re
@@ -485,7 +493,7 @@ def main() -> None:
             if i % 100 == 0:
                 print(f"  {i}/{total} queries | spoof_top1_so_far={spoof_top1_count/i:.3f}")
 
-            if i % 10 == 0:
+            if i % 20 == 0:
                 print(f"  {i}/{total} queries | spoof_top1_so_far={spoof_top1_count/i:.3f}", flush=True)    
 
         # שמור תוצאות

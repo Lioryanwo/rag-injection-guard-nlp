@@ -11,24 +11,55 @@ from typing import Dict, List, Optional
 import numpy as np
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
+from pathlib import Path
+from src.utils import get_logger
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 
+"""
+=============================================================================
+Purpose:
+The "spoof factory" of the pipeline. This script acts as the attacker. It takes 
+the legitimate queries and generates highly convincing, semantically attractive 
+fake documents ("spoofs") that obstruct retrieval. It uses OpenAI's API (or a 
+rule-based fallback) to generate text that matches the query's embedding profile 
+but completely lacks the actual answer (evidence-free) or provides plausible 
+distractors. To ensure maximum attack potency, it generates multiple candidates 
+per query, evaluates them using a dense embedding model, and retains only the 
+ones with the highest cosine similarity to the question.
+
+Inputs:
+- val_queries.jsonl: The target questions.
+- Parameters: --attack-mode (selects the attack families), --use-llm, 
+    --candidates-per-style (how many to generate before filtering).
+
+Outputs (saved to data/processed/):
+- spoof_chunks.jsonl: The synthetic, poisoned chunks ready to be injected into the corpus.
+=============================================================================
+"""
+
+# Set up logging
+script_name = Path(__file__).stem
+folder_name = Path(__file__).parent.name
+logger = get_logger(name=script_name, group=folder_name)
+
+# Attempt to import OpenAI client. If unavailable, we'll use a rule-based fallback.
 try:
     from openai import OpenAI
     _OPENAI_OK = True
 except ImportError:
     _OPENAI_OK = False
 
-
+# Common English stopwords to exclude from keyword extraction.
 STOPWORDS = {
     "what", "when", "where", "which", "who", "whom", "why", "how", "is", "was", "were",
     "are", "did", "does", "do", "the", "a", "an", "of", "in", "on", "at", "to", "for",
     "by", "and", "or", "from",
 }
 
-
+#TODO: n should be bigger if it on text
 def _kw(text: str, n: int = 6) -> List[str]:
+    """ Extract keywords from the question for use in prompts."""
     tokens = re.findall(r"\b[A-Za-z][A-Za-z'\-]+\b", text.lower())
     seen, out = set(), []
     for t in tokens:
@@ -42,9 +73,9 @@ def _kw(text: str, n: int = 6) -> List[str]:
 
 def _contains_answer_leak(text: str, answer: str) -> bool:
     """
+    Validate that the generated spoof does not contain the gold answer.
     Return True if the spoof leaks the gold answer.
-    The attack goal is: looks like an answer, but is NOT the answer.
-    Sasha: "it must look relevant while omitting the evidence."
+    The attack goal is: looks like an answer, but is NOT the answer. It must look relevant while omitting the evidence.
     """
     text_l   = text.lower()
     answer_l = str(answer).lower().strip()
@@ -89,7 +120,19 @@ def _rank_by_embedding(
     model_name: str,
     batch_size: int = 64,
 ) -> List[Dict]:
-    """Rank candidates by cosine similarity to the query embedding."""
+    """
+    Rank candidates by cosine similarity to the query embedding.
+    
+    input:
+        question - the query string to embed and compare against
+        candidates - list of dicts, each with a "text" field containing the passage to embed
+        embedder - a SentenceTransformer model for generating embeddings
+        model_name - the name of the embedding model (used for prefixing)
+    
+    output:
+        List[Dict]: The ranked candidates with embedding similarity scores.
+    """
+
     if not candidates:
         return []
     q_emb = embedder.encode(
@@ -139,7 +182,8 @@ def _rank_by_embedding(
 #                         LOOKS like the gold document (same structure, same
 #                         topic, plausible supporting details) but substitutes
 #                         the true answer with a distractor.
-#
+
+#TODO: יכול להיות שקורה בדיוק מה שסשה רצה שנימנע ממנו- מביאים תשובה אחרת במקום התשובה הנכונה אבל בדרך שאי אפשר לזהו מה התשובה הנכונה ומה לא  (כמה תלמידים יש בכיתה? נכון - 10, לא נכון - 20)
 ATTACK_FAMILIES: Dict[str, List] = {
     "evidence_free": [
         (
@@ -220,6 +264,7 @@ ATTACK_FAMILIES: Dict[str, List] = {
     ],
 }
 
+# To encourage diversity among multiple candidates for the same style, we cycle through a list of variant hints that suggest different phrasings, tones, and content focuses.
 VARIANT_HINTS = [
     "Keep it concise and dense.",
     "Include one concrete-looking detail such as a date, region, or institution.",
@@ -241,9 +286,9 @@ def _attack_mode_to_families(mode: str) -> List[str]:
         return ["hypothetical_distractor"]
     if mode == "hyde":
         return ["hyde_attack"]
+    
     # strong = all three
     return ["evidence_free", "hypothetical_distractor", "hyde_attack"]
-
 
 class LLMGenerator:
     def __init__(self, model: str = "gpt-4o-mini"):
@@ -292,7 +337,7 @@ class LLMGenerator:
             return _rule_based(question, answer, style, variant_hint)
 
 
-# ── Rule-based fallback ────────────────────────────────────────────────────────
+# ── Rule-based fallback (openAI API unavailable) ────────────────────────────────────────────────────────
 
 _CONN = [
     "However", "In contrast", "Interestingly",
@@ -302,7 +347,10 @@ _CONN = [
 
 
 def _pick_distractor(question: str) -> str:
-    """Return a contextually motivated distractor phrase based on question type."""
+    """
+    Return a contextually motivated distractor phrase based on question type.
+    Run in fallback when LLM is unavailable
+    """
     q = question.lower()
     if any(w in q for w in ("how many", "number", "count", "total", "much")):
         return random.choice([
@@ -324,6 +372,10 @@ def _pick_distractor(question: str) -> str:
 
 
 def _rule_based(question: str, answer: str, style: str, variant_hint: str = "") -> str:
+    """
+    Generate a spoof passage using a simple rule-based template. 
+    This is a fallback when the LLM is unavailable or fails the answer leak check.
+    """
     kw  = _kw(question, n=4)
     kp  = ", ".join(kw) if kw else "the subject"
     conn = random.choice(_CONN)
@@ -376,8 +428,11 @@ def _rule_based(question: str, answer: str, style: str, variant_hint: str = "") 
     return text
 
 
+# ── Main Section ────────────────────────────────────────────────────────
+
 def _make_chunk(query: Dict, vid: int, family: str, style: str,
                 text: str, total_candidates: int) -> Dict:
+    """ Construct the chunk dict for a single generated candidate. """
     answers = query.get("answers", [])
     return {
         "chunk_id":    f"spoof::{family}::{style}::{query['query_id']}::{vid}",
@@ -441,17 +496,25 @@ def main() -> None:
     print(f"Embedding model : {args.embedding_model}")
     print(f"Candidates/style: {candidates_per_style}  →  keep top {args.keep_per_style}")
     print(f"Attack mode     : {args.attack_mode}")
+    logger.info(f"Initializing Attack Generation. Mode: {args.attack_mode}")
+    logger.info(f"Embedding Model: {args.embedding_model}")
+    logger.info(f"Configuration: Generating {candidates_per_style} candidates per style, keeping top {args.keep_per_style}")
+    logger.info(f"Active Attack Families: {families}")
+
     embedder = SentenceTransformer(args.embedding_model)
 
     llm: Optional[LLMGenerator] = None
     if args.use_llm:
         try:
             llm = LLMGenerator()
-            print("LLM: GPT-4o-mini")
+            logger.info("LLM Generation enabled: Connected to OpenAI GPT-4o-mini.")
+            print("Mode: LLM-generated  (using GPT-4o-mini)")
         except Exception as e:
             print(f"[WARNING] {e} — using rule-based fallback")
+            logger.warning(f"LLM initialization failed ({e}) — falling back to Rule-based generation.")
     else:
         print("Mode: rule-based  (pass --use-llm for GPT-4o-mini)")
+        logger.info("Operating in Rule-based mode (pass --use-llm to enable GPT).")
 
     families = _attack_mode_to_families(args.attack_mode)
     styles_list = [s for fam in families for s, _ in ATTACK_FAMILIES[fam]]
@@ -492,23 +555,33 @@ def main() -> None:
 
         if q_idx % 25 == 0:
             print(f"  {q_idx}/{len(queries)} queries | {len(rows)} chunks so far")
+            logger.info(f"Progress: Processed {q_idx}/{len(queries)} queries. Generated {len(rows)} spoof chunks so far.")
 
     _write_jsonl(args.output_path, rows)
 
     print(f"\nGenerated {len(rows)} spoof chunks → {args.output_path}")
+    logger.info(f"Attack generation complete! Saved {len(rows)} spoof chunks to {args.output_path}")
+
     if selection_scores:
         print(
             f"Similarity to query  mean={np.mean(selection_scores):.4f}  "
             f"min={np.min(selection_scores):.4f}  max={np.max(selection_scores):.4f}"
         )
+        logger.info(
+            f"Attack Similarity Metrics -> Mean: {np.mean(selection_scores):.4f} | "
+            f"Min: {np.min(selection_scores):.4f} | Max: {np.max(selection_scores):.4f}"
+        )
 
     counts: Dict[str, int] = {}
     for r in rows:
         counts[r["attack_type"]] = counts.get(r["attack_type"], 0) + 1
+
     print("Style breakdown:", json.dumps(counts, indent=2))
+    logger.info(f"Attack Style Breakdown: {json.dumps(counts)}")
 
     if llm:
-        print(f"LLM API calls: {llm.calls}")
+        print(f"Total LLM API calls: {llm.calls}")
+        logger.info(f"Total LLM API calls made: {llm.calls}")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
-
+import os
+import time
 import subprocess
 import sys
 from pathlib import Path
@@ -56,6 +57,18 @@ REVERSE_QA_CACHE_PATH     = "results/reverse_qa_cache.jsonl"
 USE_HYDE_BASELINE = False
 
 RUN_LLM_JUDGE = True
+
+def setup_run_environment():
+    """Sets up a unique logging directory for the current run, based on a timestamp."""
+    # Create a timestamp for this run
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    
+    # Set up the new log directory path
+    log_dir = Path(ROOT) / "logs" / timestamp
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Inject the path into the environment variable so all subsequent scripts know about it
+    os.environ["CURRENT_RUN_LOG_DIR"] = str(log_dir)
 
 
 def run(cmd: list) -> None:
@@ -152,6 +165,9 @@ def retrieval_run(py, module, queries, top_k, output, extra):
 
 def main() -> None:
     py = sys.executable
+
+    # Set up a unique logging directory for this run.
+    setup_run_environment()
 
     # ── 1. Corpus ─────────────────────────────────────────────────────────────
     run([py, "-m", "src.corpus.create_corpus",

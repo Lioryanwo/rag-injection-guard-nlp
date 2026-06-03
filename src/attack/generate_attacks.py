@@ -185,6 +185,35 @@ def _rank_by_embedding(
 
 #TODO: יכול להיות שקורה בדיוק מה שסשה רצה שנימנע ממנו- מביאים תשובה אחרת במקום התשובה הנכונה אבל בדרך שאי אפשר לזהו מה התשובה הנכונה ומה לא  (כמה תלמידים יש בכיתה? נכון - 10, לא נכון - 20)
 ATTACK_FAMILIES: Dict[str, List] = {
+    "hypothetical_distractor": [
+        (
+            "near_answer_with_distractor",
+            'Write a passage that talks about the context of this question but fundamentally lacks the answer:\n"{question}"\n'
+            "- Use the same phrasing and entities as the question.\n"
+            "- Include: {keywords}\n"
+            '- Do NOT include the answer: "{answer}"\n'
+            "- CRITICAL: Do not invent false information or fake facts to act as an alternative answer; instead, discuss the surrounding concepts naturally.\n"
+            "- Include a factual, plausible distractor from the same domain to look authentic:\n"
+            "  * Provide a concrete, real detail about a RELATED entity, place, or event, but DO NOT present it as the answer to the question.\n"
+            "  * Use vague quantifiers (e.g., 'many', 'various') when discussing the specific subject of the question.\n"
+            "- 3-5 sentences. Output only the passage.",
+        ),
+        (
+            "topic_rich_no_answer",
+            'Write a passage about the topic of:\n"{question}"\n'
+            "- Match the vocabulary a retriever expects for this query.\n"
+            "- Use all relevant keywords: {keywords}\n"
+            '- NEVER reveal the answer: "{answer}"\n'
+            "- CRITICAL: Do not invent false information or fake facts to act as an alternative answer; instead, discuss the surrounding concepts naturally.\n"
+            "- Where the answer would appear, use vague quantifiers: many, several, various, a number of.\n"
+            "- Include at least one concrete detail (name, institution, date) about the surrounding context so a chunk-only filter cannot reject it.\n"
+            "- 3-5 sentences. Output only the passage.",
+        )
+    ]
+}
+
+# Old prompts. (hyde_attack give good results but create fake facts)
+"""
     "evidence_free": [
         (
             "encyclopedic",
@@ -201,30 +230,6 @@ ATTACK_FAMILIES: Dict[str, List] = {
             "- Include: {keywords}\n"
             '- Do NOT include the answer: "{answer}"\n'
             "- 3-4 sentences. Output only the passage.",
-        ),
-    ],
-    "hypothetical_distractor": [
-        (
-            "near_answer_with_distractor",
-            'Write a passage that almost answers this question but lacks the key evidence:\n"{question}"\n'
-            "- Use the same phrasing and entities as the question.\n"
-            "- Include: {keywords}\n"
-            '- Do NOT include the answer: "{answer}"\n'
-            "- Include one plausible distractor:\n"
-            "  * If the question asks for a COUNT: give a different but related count (e.g. instructors not students).\n"
-            "  * If the question asks for a DATE: give a nearby but wrong date.\n"
-            "  * If the question asks for a NAME/PLACE: give a related but different name.\n"
-            "- 3-5 sentences. Output only the passage.",
-        ),
-        (
-            "topic_rich_no_answer",
-            'Write a passage about the topic of:\n"{question}"\n'
-            "- Match the vocabulary a retriever expects for this query.\n"
-            "- Use all relevant keywords: {keywords}\n"
-            '- NEVER reveal the answer: "{answer}"\n'
-            "- Where the answer would appear, use vague quantifiers: many, several, various, a number of.\n"
-            "- Include at least one concrete detail (name, institution, date) so a chunk-only filter cannot reject it.\n"
-            "- 3-5 sentences. Output only the passage.",
         ),
     ],
     "hyde_attack": [
@@ -248,6 +253,21 @@ ATTACK_FAMILIES: Dict[str, List] = {
             "4. Must read as a COMPLETELY LEGITIMATE reference passage — no AI fingerprints.\n\n"
             "Output only the passage.",
         ),
+        
+        (
+            "hyde_wrong_answer",
+            'You are generating a RETRIEVAL ATTACK document.\n'
+            'The retriever is searching for a document that answers:\n"{question}"\n\n'
+            "Write a SHORT passage (3-5 sentences) that:\n"
+            "1. Looks EXACTLY like the Wikipedia/textbook document that would answer this question.\n"
+            "   - Same structure: introduce the topic, give a specific supporting detail, conclude.\n"
+            "   - Same entities: {keywords}\n"
+            '2. Does NOT contain the true answer: "{answer}"\n'
+            "3. Instead of the answer, shifts the focus to a concrete, factual supporting detail about a DIFFERENT aspect of the topic.\n"
+            "   - Do not invent false statistics or fake dates. Use real-sounding peripheral context.\n"
+            "4. Must read as a COMPLETELY LEGITIMATE reference passage that simply happens to omit the core fact.\n\n"
+            "Output only the passage.",
+        ),
         (
             # HyDE variant: generate multiple hypothetical docs, keep the one
             # with the highest embedding similarity.  Multiple variants because
@@ -261,8 +281,9 @@ ATTACK_FAMILIES: Dict[str, List] = {
             "- The passage must look indistinguishable from a real corpus document.\n"
             "- 3-5 sentences. Output only the passage.",
         ),
-    ],
-}
+    ]
+"""
+
 
 # To encourage diversity among multiple candidates for the same style, we cycle through a list of variant hints that suggest different phrasings, tones, and content focuses.
 VARIANT_HINTS = [

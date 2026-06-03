@@ -1,16 +1,38 @@
 from __future__ import annotations
 import json, logging
+import os
+import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 LOGGER_NAME = "rag_spoofing"
 
-def get_logger(name: str = LOGGER_NAME, level: int = logging.INFO) -> logging.Logger:
+import os
+import logging
+from pathlib import Path
+
+def get_logger(name: str, group: str = None, level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger(name)
+    
     if not logger.handlers:
-        h = logging.StreamHandler()
-        h.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
-        logger.addHandler(h)
+        log_dir_str = os.environ.get("CURRENT_RUN_LOG_DIR")
+        
+        if not log_dir_str:
+            log_dir_str = "logs/standalone_runs"
+            Path(log_dir_str).mkdir(parents=True, exist_ok=True)
+            
+        log_dir = Path(log_dir_str)
+        
+        # הטריק כאן: אם הועבר group (שם תיקייה), נשתמש בו לקובץ. אחרת נשתמש בשם הסקריפט.
+        file_name = f"{group}.log" if group else f"{name}.log"
+        log_file_path = log_dir / file_name
+        
+        file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+        formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+        file_handler.setFormatter(formatter)
+        
+        logger.addHandler(file_handler)
+        
     logger.setLevel(level)
     return logger
 

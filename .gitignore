@@ -8,6 +8,7 @@ __pycache__/
 
 # Generated data (large files — not committed)
 data/processed/
+data/processed_old/
 indexes/
 results/retrieval/
 results/judge/
@@ -35,3 +36,7 @@ dist/
 build/
 
 .claude/
+
+# log
+logs/*
+!logs/.gitkeep

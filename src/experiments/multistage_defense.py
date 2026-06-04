@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-src/defense/multistage_defense.py
+src/experiments/multistage_defense.py
 
 Multi-Stage RAG Defense Pipeline
 ================================

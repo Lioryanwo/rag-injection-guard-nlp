@@ -178,7 +178,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--input", required=True)
     ap.add_argument("--output-dir", default="results/tuning_reverse_qa")
     ap.add_argument("--top-k", type=int, default=20)
-    ap.add_argument("--num-questions", type=int, default=5)
+    ap.add_argument("--num-questions", type=int, default=2)
     ap.add_argument("--qg-backend", default="auto", choices=["auto", "openai", "transformers", "heuristic"])
     ap.add_argument("--no-cross-encoder", action="store_true")
     ap.add_argument("--base-score-key", default="defense_score")

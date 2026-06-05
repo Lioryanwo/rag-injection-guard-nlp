@@ -17,11 +17,7 @@ try:
 except ImportError:
     _REVERSE_QA_AVAILABLE = False
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Core research idea (Sasha):
-#   "What questions could this chunk realistically answer?"
-#   Semantic attraction ≠ answer support.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 STOPWORDS = {
     "what", "when", "where", "which", "who", "whom", "why", "how", "is", "was", "were",
@@ -322,13 +318,17 @@ def text_only_rerank(query: str, ranked: List[Dict], threshold: float = 0.30) ->
 def reverse_qa_rerank(
     query: str,
     ranked: List[Dict],
-    reverse_qa_weight: float = 0.25,
+    reverse_qa_weight: float = 0.30,
     num_questions: int = 5,
     qg_backend: str = "openai",
     openai_model: str = "gpt-4o-mini",
     cache_path: Optional[str] = "results/reverse_qa_cache.jsonl",
     use_cross_encoder: bool = True,
     top_k: int = 20,
+    bm25_weight: float = 0.35,
+    cross_encoder_weight: float = 0.55,
+    evidence_weight: float = 0.10,
+    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
 ) -> List[Dict]:
     """
     Reverse QA (Doc2Query via LLM) reranking layer.
@@ -360,6 +360,10 @@ def reverse_qa_rerank(
         openai_model=openai_model,
         cache_path=cache_path,
         use_cross_encoder=use_cross_encoder,
+        bm25_weight=bm25_weight,
+        cross_encoder_weight=cross_encoder_weight,
+        evidence_weight=evidence_weight,
+        cross_encoder_model=cross_encoder_model,
         # Use the existing defense score as the base score
         base_score_key="score",
         normalize_scores=True,
@@ -384,11 +388,15 @@ def cross_encoder_rerank(
     doc2query_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     # ── Reverse QA (new) ──────────────────────────────────────────────────────
     use_reverse_qa: bool = False,
-    reverse_qa_weight: float = 0.25,
+    reverse_qa_weight: float = 0.30,
     reverse_qa_num_questions: int = 5,
     reverse_qa_qg_backend: str = "openai",
     reverse_qa_openai_model: str = "gpt-4o-mini",
     reverse_qa_cache_path: Optional[str] = "results/reverse_qa_cache.jsonl",
+    reverse_qa_bm25_weight: float = 0.35,
+    reverse_qa_cross_encoder_weight: float = 0.55,
+    reverse_qa_evidence_weight: float = 0.10,
+    reverse_qa_cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
 ) -> List[Dict]:
     """
     Query-aware defense: CrossEncoder + Doc2Query answerability.
@@ -540,7 +548,11 @@ def cross_encoder_rerank(
             openai_model=reverse_qa_openai_model,
             cache_path=reverse_qa_cache_path,
             use_cross_encoder=True,
-            top_k=len(out),
+            top_k=min(20, len(out)),
+            bm25_weight=reverse_qa_bm25_weight,
+            cross_encoder_weight=reverse_qa_cross_encoder_weight,
+            evidence_weight=reverse_qa_evidence_weight,
+            cross_encoder_model=reverse_qa_cross_encoder_model,
         )
         print(f"[reverse_qa] Done. Top-1 spoof={out[0].get('is_spoof', False) if out else 'N/A'}")
 
@@ -582,12 +594,21 @@ def main() -> None:
                         help="Enable LLM-based Reverse QA reranking (requires OPENAI_API_KEY)")
     parser.add_argument("--reverse-qa-weight",      type=float, default=0.25,
                         help="Bonus weight for Reverse QA relevance score")
-    parser.add_argument("--reverse-qa-num-questions", type=int, default=5)
+    parser.add_argument("--reverse-qa-num-questions", type=int, default=2)
     parser.add_argument("--reverse-qa-qg-backend",  type=str,  default="openai",
                         choices=["openai", "heuristic", "transformers", "auto"])
     parser.add_argument("--reverse-qa-openai-model", type=str, default="gpt-4o-mini")
     parser.add_argument("--reverse-qa-cache-path",  type=str,
                         default="results/reverse_qa_cache.jsonl")
+    parser.add_argument("--reverse-qa-bm25-weight", type=float, default=0.35,
+                        help="BM25 weight inside Reverse QA score")
+    parser.add_argument("--reverse-qa-cross-encoder-weight", type=float, default=0.55,
+                        help="CrossEncoder weight inside Reverse QA score")
+    parser.add_argument("--reverse-qa-evidence-weight", type=float, default=0.10,
+                        help="Answerability evidence weight inside Reverse QA score")
+    parser.add_argument("--reverse-qa-cross-encoder-model", type=str,
+                        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+                        help="Smaller CE used only for matching generated questions to the query")
     args = parser.parse_args()
 
     results = _read_json(args.input_path)
@@ -631,6 +652,10 @@ def main() -> None:
                 reverse_qa_qg_backend=args.reverse_qa_qg_backend,
                 reverse_qa_openai_model=args.reverse_qa_openai_model,
                 reverse_qa_cache_path=args.reverse_qa_cache_path,
+                reverse_qa_bm25_weight=args.reverse_qa_bm25_weight,
+                reverse_qa_cross_encoder_weight=args.reverse_qa_cross_encoder_weight,
+                reverse_qa_evidence_weight=args.reverse_qa_evidence_weight,
+                reverse_qa_cross_encoder_model=args.reverse_qa_cross_encoder_model,
             )
 
         topk = reranked[: args.keep_top_k]

@@ -5,12 +5,43 @@ from typing import Dict, List, Optional
 import numpy as np
 from src.utils import get_logger, read_json, write_json, read_jsonl
 
-LOGGER = get_logger(__name__)
+"""
+=============================================================================
+Script Name: evaluate_attack.py
+
+Purpose:
+This script acts as the "accountant" of the attack phase. It measures the 
+effectiveness of the retrieval attack by comparing the search results from 
+the clean baseline index against the poisoned attack index. It computes critical 
+vulnerability metrics such as Recall Drop, Rank Displacement (how far down 
+the real document was pushed), and the Top-1 Spoof Win Rate.
+
+Inputs:
+- baseline_results.json: Retrieval results before the attack.
+- attack_results.json: Retrieval results after the attack.
+- retrieval_eval_queries.json: The unified queries and ground truth labels.
+- spoof_chunks.jsonl: The generated spoof documents (for diversity checks).
+
+Outputs:
+- attack_metrics.json: A compiled report containing all vulnerability metrics.
+=============================================================================
+"""
+
+# Set up a logger
+script_name = Path(__file__).stem
+folder_name = Path(__file__).parent.name
+logger = get_logger(name=script_name, group=folder_name)
+
+
+# --- Helper Functions ---
 
 def _build_lookup(items: List[Dict], key: str) -> Dict:
     return {item[key]: item for item in items}
 
+
 def _is_relevant(item: Dict, query_obj: Dict) -> bool:
+    """ Checks if a retrieved chunk matches the ground-truth document ID or chunk prefix. """
+
     cid = item.get("chunk_id", "")
     did = item.get("doc_id", "")
     if cid in set(query_obj.get("relevant_chunk_ids", [])):
@@ -22,6 +53,29 @@ def _is_relevant(item: Dict, query_obj: Dict) -> bool:
         return True
     return False
 
+
+def _norm_results(raw) -> List[Dict]:
+    """Accept both list-of-dicts and dict-keyed formats."""
+    if isinstance(raw, list):
+        return raw
+    # dict format: {query_id: [retrieved_items]}
+    out = []
+    for qid, items in raw.items():
+        out.append({"query_id": qid, "retrieved": items})
+    return out
+
+
+def _first_relevant_rank(r: Dict, qobj: Dict) -> Optional[int]:
+    for rank, x in enumerate(r.get("retrieved", []), 1):
+        if _is_relevant(x, qobj):
+            return rank
+    return None
+
+
+# --- Metrics Implementations ---
+
+# Metric 1: Recall@K. 
+# Measures the percentage of queries where the true document appeared in the top-K results.
 def recall_at_k(results: List[Dict], qlookup: Dict, k: int) -> float:
     hits = []
     for r in results:
@@ -31,12 +85,9 @@ def recall_at_k(results: List[Dict], qlookup: Dict, k: int) -> float:
         hits.append(1.0 if any(_is_relevant(x, qobj) for x in r.get("retrieved", [])[:k]) else 0.0)
     return float(np.mean(hits)) if hits else 0.0
 
-def _first_relevant_rank(r: Dict, qobj: Dict) -> Optional[int]:
-    for rank, x in enumerate(r.get("retrieved", []), 1):
-        if _is_relevant(x, qobj):
-            return rank
-    return None
 
+# Metric 2: Rank Displacement. 
+# Measures how many positions the true document was pushed down by the spoof chunks.
 def rank_displacement(baseline: List[Dict], attack: List[Dict], qlookup: Dict) -> float:
     atk_map = _build_lookup(attack, "query_id")
     disps = []
@@ -51,12 +102,18 @@ def rank_displacement(baseline: List[Dict], attack: List[Dict], qlookup: Dict) -
             disps.append(ra - rb)
     return float(np.mean(disps)) if disps else 0.0
 
+
+# Metric 3: Top-1 Spoof Win Rate. 
+# The percentage of queries where a spoof chunk defeated all real documents to take the #1 spot.
 def top1_spoof_win_rate(attack: List[Dict]) -> float:
     wins = [1 for r in attack if r.get("retrieved") and
             (r["retrieved"][0].get("label") == "injected" or
              r["retrieved"][0].get("is_spoof", False))]
     return len(wins) / len(attack) if attack else 0.0
 
+
+# Metric 4: Attraction Margin. 
+# The mathematical gap between the highest-scoring spoof and the highest-scoring real document.
 def attraction_margin(attack: List[Dict]) -> float:
     margins = []
     for r in attack:
@@ -72,6 +129,8 @@ def attraction_margin(attack: List[Dict]) -> float:
             margins.append(top_sp - top_re)
     return float(np.mean(margins)) if margins else 0.0
 
+# Metric 5: Spoof Diversity. 
+# Calculates the lexical variety among generated spoofs (using Jaccard similarity) to ensure the attacker isn't just repeating the same text.
 def spoof_diversity(spoof_chunks: List[Dict]) -> Dict:
     """Diversity stats computed directly from spoof_chunks.jsonl."""
     by_style: Dict[str, int] = {}
@@ -94,17 +153,11 @@ def spoof_diversity(spoof_chunks: List[Dict]) -> Dict:
         "diversity_score": round(1 - float(np.mean(jaccards)), 4) if jaccards else 1.0,
     }
 
-def _norm_results(raw) -> List[Dict]:
-    """Accept both list-of-dicts and dict-keyed formats."""
-    if isinstance(raw, list):
-        return raw
-    # dict format: {query_id: [retrieved_items]}
-    out = []
-    for qid, items in raw.items():
-        out.append({"query_id": qid, "retrieved": items})
-    return out
+
+# --- Main Execution Flow ---
 
 def main() -> None:
+    # --- Argument Parsing & Data Loading ---
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline-results", default="results/retrieval/minilm_baseline_results.json")
     parser.add_argument("--attack-results",   default="results/retrieval/minilm_attack_results.json")
@@ -115,6 +168,10 @@ def main() -> None:
     parser.add_argument("--output",           default="results/retrieval/attack_metrics.json")
     args = parser.parse_args()
 
+    # --- Load Data ---
+    # Read baseline results, attack results, queries, and spoof chunks.
+    logger.info("Loading baseline results, attack results, and evaluation queries...")
+
     baseline_raw  = read_json(args.baseline_results)
     attack_raw    = read_json(args.attack_results)
     queries       = read_json(args.queries)
@@ -124,6 +181,7 @@ def main() -> None:
     attack   = _norm_results(attack_raw)
     qlookup  = _build_lookup(queries, "query_id")
 
+    # --- Build Metrics Report ---
     metrics = {
         "top_k":                   args.top_k,
         "num_queries":             len(queries),
@@ -136,9 +194,11 @@ def main() -> None:
         "spoof_diversity":         spoof_diversity(spoof_chunks),
     }
 
+    # Save the metrics report to a JSON
     write_json(metrics, args.output)
-    LOGGER.info("Attack metrics saved → %s", args.output)
+    logger.info("Attack metrics saved → %s", args.output)
     print(json.dumps(metrics, indent=2, ensure_ascii=False))
+
 
 if __name__ == "__main__":
     main()

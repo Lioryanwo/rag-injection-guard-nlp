@@ -8,7 +8,7 @@ __pycache__/
 
 # Generated data (large files — not committed)
 data/processed/
-data/processed_old/
+data/processed_*/
 indexes/
 results/retrieval/
 results/judge/

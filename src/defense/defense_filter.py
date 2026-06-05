@@ -6,6 +6,7 @@ import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from src.utils import get_logger
 
 import numpy as np
 from sentence_transformers import CrossEncoder, SentenceTransformer
@@ -17,11 +18,40 @@ try:
 except ImportError:
     _REVERSE_QA_AVAILABLE = False
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Core research idea (Sasha):
-#   "What questions could this chunk realistically answer?"
-#   Semantic attraction ≠ answer support.
-# ─────────────────────────────────────────────────────────────────────────────
+
+# Set up logger
+script_name = Path(__file__).stem
+folder_name = Path(__file__).parent.name
+logger = get_logger(name=script_name, group=folder_name)
+
+
+"""
+=============================================================================
+Script Name: defense_filter.py
+
+Purpose:
+The core defense mechanism (Reranker) against retrieval obstruction attacks. 
+This script receives an initial top-K pool of retrieved documents (typically 20) 
+and filters out synthetically generated spoofs to retain only the most authentic 
+and relevant chunks (typically 5). It employs a multi-layered defense strategy:
+1. Lexical Suspicion: Detects AI watermarks, generic filler, and low diversity.
+2. Cross-Encoder: Verifies deep semantic alignment between the query and the chunk.
+3. Doc2Query (Answerability): Generates hypothetical questions from the chunk 
+   to verify if it truly answers the user's query or just makes "empty promises".
+4. Reverse QA (Optional): An advanced LLM-based query-generation verification step.
+
+Inputs:
+- attack_results.json (or baseline results): The initial top-20 retrieved chunks.
+- val_queries.jsonl: The original user queries.
+- Parameters: Weights for semantic, retrieval, Doc2Query, and lexical penalties, 
+  as well as the suspicion threshold.
+
+Outputs (saved to results/retrieval/):
+- defense_results.json: The filtered, reranked top-5 chunks per query, safe 
+  for downstream generation.
+=============================================================================
+"""
+
 
 STOPWORDS = {
     "what", "when", "where", "which", "who", "whom", "why", "how", "is", "was", "were",
@@ -322,13 +352,17 @@ def text_only_rerank(query: str, ranked: List[Dict], threshold: float = 0.30) ->
 def reverse_qa_rerank(
     query: str,
     ranked: List[Dict],
-    reverse_qa_weight: float = 0.25,
+    reverse_qa_weight: float = 0.30,
     num_questions: int = 5,
     qg_backend: str = "openai",
     openai_model: str = "gpt-4o-mini",
     cache_path: Optional[str] = "results/reverse_qa_cache.jsonl",
     use_cross_encoder: bool = True,
     top_k: int = 20,
+    bm25_weight: float = 0.35,
+    cross_encoder_weight: float = 0.55,
+    evidence_weight: float = 0.10,
+    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
 ) -> List[Dict]:
     """
     Reverse QA (Doc2Query via LLM) reranking layer.
@@ -360,6 +394,10 @@ def reverse_qa_rerank(
         openai_model=openai_model,
         cache_path=cache_path,
         use_cross_encoder=use_cross_encoder,
+        bm25_weight=bm25_weight,
+        cross_encoder_weight=cross_encoder_weight,
+        evidence_weight=evidence_weight,
+        cross_encoder_model=cross_encoder_model,
         # Use the existing defense score as the base score
         base_score_key="score",
         normalize_scores=True,
@@ -374,7 +412,7 @@ def cross_encoder_rerank(
     query: str,
     ranked: List[Dict],
     cross_encoder: CrossEncoder,
-    threshold: float = 0.30,          # ← NOW ACTUALLY USED
+    threshold: float = 0.30,
     semantic_weight: float = 0.55,
     retrieval_weight: float = 0.15,
     doc2query_weight: float = 0.30,
@@ -384,53 +422,64 @@ def cross_encoder_rerank(
     doc2query_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     # ── Reverse QA (new) ──────────────────────────────────────────────────────
     use_reverse_qa: bool = False,
-    reverse_qa_weight: float = 0.25,
+    reverse_qa_weight: float = 0.30,
     reverse_qa_num_questions: int = 5,
     reverse_qa_qg_backend: str = "openai",
     reverse_qa_openai_model: str = "gpt-4o-mini",
     reverse_qa_cache_path: Optional[str] = "results/reverse_qa_cache.jsonl",
+    reverse_qa_bm25_weight: float = 0.35,
+    reverse_qa_cross_encoder_weight: float = 0.55,
+    reverse_qa_evidence_weight: float = 0.10,
+    reverse_qa_cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
 ) -> List[Dict]:
     """
-    Query-aware defense: CrossEncoder + Doc2Query answerability.
+    The core query-aware defense mechanism. It reranks retrieved chunks by fusing 
+    multiple signals to identify and penalize semantic attacks (spoofs).
 
-    BUG FIX (critical):
-    The previous version had `threshold` as a parameter but NEVER USED IT.
-    The hard-filter condition was hardcoded to `sus >= 0.80` regardless of
-    the threshold argument.  This is why the threshold sweep was completely
-    flat — changing the threshold had zero effect on filtering.
+    The defense pipeline consists of several sequential stages:
+    1. Retrieval Normalization: Normalizes the original vector/BM25 scores.
+    2. Semantic Alignment: Uses a CrossEncoder to verify logical answerability.
+    3. Doc2Query Alignment (Optional): Generates questions from the chunk and 
+       checks their similarity to the user's query.
+    4. Lexical Suspicion: Calculates AI-fingerprint scores (0.0 to 1.0).
+    5. Hard Filtering: Drops chunks completely if suspicion >= threshold.
+    6. Soft Scoring: Combines CE, Doc2Query, and Retrieval scores, then applies 
+       a soft decay based on the lexical suspicion.
+    7. Reverse QA (Optional): An LLM-based final verification pass.
 
-    Fix: the threshold parameter now controls the hard-filter cutoff.
-    Chunks with suspicion >= threshold are removed from the output.
-    This makes the threshold sweep meaningful.
+    Scoring Formula:
+      Base Score = (CE_norm * semantic_weight) + (D2Q_norm * doc2query_weight) 
+                   + (Retrieval_norm * retrieval_weight)
+      Final Score = Base Score * (1 - lexical_penalty_weight * suspicion)
 
-    Scoring formula (soft, not hard):
-      final = CE_norm * semantic_weight
-            + doc2query_norm * doc2query_weight
-            + retrieval_norm * retrieval_weight
-            * (1 - lexical_penalty_weight * suspicion)   ← soft decay
+    Inputs:
+    - query: The original user query.
+    - ranked: The initial list of retrieved chunks (usually Top-20).
+    - Models and weights for the various scoring components.
 
-    NEW: when use_reverse_qa=True, a second reranking pass is applied after
-    the CE pass, adding a relevance bonus based on LLM-generated questions.
+    Outputs:
+    - List[Dict]: The reranked and filtered chunks, sorted by final score.
     """
+
     if not ranked:
         return []
 
-    # Step 1: retrieval scores
+    # --- Step 1: Retrieval Scores Normalization ---
     original_scores = [float(item.get("score", 0.0)) for item in ranked]
     retrieval_norm  = _minmax(original_scores)
 
-    # Step 2: CrossEncoder scores
+    # --- Step 2: CrossEncoder Semantic Scoring ---
     pairs         = [(query, item.get("text", "")) for item in ranked]
-    raw_ce        = cross_encoder.predict(pairs, batch_size=batch_size,
-                                          show_progress_bar=False)
+    raw_ce        = cross_encoder.predict(pairs, batch_size=batch_size, show_progress_bar=False)
     raw_ce        = [float(x) for x in np.asarray(raw_ce).reshape(-1)]
     ce_norm       = _minmax(raw_ce)
     ce_prob       = [_sigmoid(x) for x in raw_ce]
 
-    # Step 3: Doc2Query answerability
+    # --- Step 3: Doc2Query Answerability Scoring (Optional) ---
     d2q_scores:  List[float] = [0.0] * len(ranked)
     d2q_details: List[Dict]  = [{}   for _ in ranked]
     if doc2query_embedder is not None:
+        logger.info("Calculating Doc2Query alignment scores...")
         for i, item in enumerate(ranked):
             best, detail = doc2query_alignment(
                 query, item.get("text", ""),
@@ -440,7 +489,7 @@ def cross_encoder_rerank(
             d2q_details[i] = detail
     d2q_norm = _minmax(d2q_scores) if doc2query_embedder else [0.0] * len(ranked)
 
-    # Step 4: Suspicion scores
+    # --- Step 4: Lexical Suspicion Scoring ---
     sus_scores  = []
     sus_details = []
     for item in ranked:
@@ -451,15 +500,14 @@ def cross_encoder_rerank(
     # ── Debug logging ─────────────────────────────────────────────────────────
     spoof_sus  = [s for s, item in zip(sus_scores, ranked) if item.get("is_spoof")]
     real_sus   = [s for s, item in zip(sus_scores, ranked) if not item.get("is_spoof")]
-    print(
-        f"[defense th={threshold:.2f}] "
-        f"avg_sus_spoof={np.mean(spoof_sus):.3f} "
-        f"avg_sus_real={np.mean(real_sus):.3f} "
-        f"would_filter_spoof={sum(1 for s in spoof_sus if s >= threshold)}/{len(spoof_sus)} "
-        f"would_filter_real={sum(1 for s in real_sus  if s >= threshold)}/{len(real_sus)}"
+    logger.debug(
+        f"Suspicion Stats -> Avg Spoof: {np.mean(spoof_sus) if spoof_sus else 0:.3f} | "
+        f"Avg Real: {np.mean(real_sus) if real_sus else 0:.3f} | "
+        f"Spoofs crossing threshold: {sum(1 for s in spoof_sus if s >= threshold)}/{len(spoof_sus)} | "
+        f"Reals crossing threshold: {sum(1 for s in real_sus if s >= threshold)}/{len(real_sus)}"
     )
 
-    # Step 5: Score and filter
+    # --- Step 5: Score Integration and Hard Filtering ---
     out: List[Dict] = []
     hard_filtered = 0
 
@@ -472,20 +520,19 @@ def cross_encoder_rerank(
         d2q_det = d2q_details[idx]
         d2q_val = d2q_scores[idx]
 
-        # ── Hard filter using the ACTUAL threshold parameter ───────────────────
-        # BUG FIX: previously hardcoded to 0.80 regardless of `threshold`
+        # Hard filter: Drop chunks entirely if their suspicion exceeds the threshold
         if sus >= threshold:
             hard_filtered += 1
             continue
 
-        # ── Soft scoring ───────────────────────────────────────────────────────
+        # Soft scoring: Combine signals and apply lexical penalty decay
         final_score = (
             semantic_weight  * ce_n +
             doc2query_weight * d2q_n +
             retrieval_weight * r_norm
         )
 
-        # Soft suspicion decay — floor at 0.5 to preserve recall
+        # Soft suspicion decay — floor at 0.5 to preserve some recall for edge cases
         sus_decay   = max(0.5, 1.0 - lexical_penalty_weight * sus)
         final_score = max(0.0, float(final_score * sus_decay))
 
@@ -522,15 +569,12 @@ def cross_encoder_rerank(
         })
 
     out.sort(key=lambda x: x["score"], reverse=True)
-    print(
-        f"[defense th={threshold:.2f}] "
-        f"hard_filtered={hard_filtered}/{len(ranked)} "
-        f"kept={len(out)}/{len(ranked)}"
-    )
+    logger.info(f"Filtering complete. Hard-filtered: {hard_filtered}/{len(ranked)} chunks. Kept: {len(out)} chunks.")
 
-    # Reverse QA second pass (optional)
+    # --- Step 6: Reverse QA Final Pass (Optional LLM Verification) ---
     if use_reverse_qa and out:
-        print(f"[reverse_qa] Running on {len(out)} kept chunks...")
+        logger.info(f"Initiating Reverse QA LLM reranking on the top {len(out)} surviving chunks...")
+
         out = reverse_qa_rerank(
             query=query,
             ranked=out,
@@ -540,9 +584,15 @@ def cross_encoder_rerank(
             openai_model=reverse_qa_openai_model,
             cache_path=reverse_qa_cache_path,
             use_cross_encoder=True,
-            top_k=len(out),
+            top_k=min(20, len(out)),
+            bm25_weight=reverse_qa_bm25_weight,
+            cross_encoder_weight=reverse_qa_cross_encoder_weight,
+            evidence_weight=reverse_qa_evidence_weight,
+            cross_encoder_model=reverse_qa_cross_encoder_model,
         )
-        print(f"[reverse_qa] Done. Top-1 spoof={out[0].get('is_spoof', False) if out else 'N/A'}")
+
+        top1_is_spoof = out[0].get('is_spoof', False) if out else 'N/A'
+        logger.info(f"Reverse QA complete. Current Top-1 is spoof: {top1_is_spoof}")
 
     return out
 
@@ -555,6 +605,8 @@ def load_queries(path: Path) -> Dict[str, str]:
 
 
 def main() -> None:
+    # --- 1. CLI Arguments Parsing ---
+    # Parse all configuration parameters for defense modes, weights, and Reverse QA.
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-path",           type=Path,
                         default=Path("results/retrieval/attack_results.json"))
@@ -577,24 +629,39 @@ def main() -> None:
     parser.add_argument("--doc2query-embedding-model", type=str,
                         default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--doc2query-weight",      type=float, default=0.30)
+
     # ── Reverse QA args ───────────────────────────────────────────────────────
     parser.add_argument("--use-reverse-qa",         action="store_true",
                         help="Enable LLM-based Reverse QA reranking (requires OPENAI_API_KEY)")
     parser.add_argument("--reverse-qa-weight",      type=float, default=0.25,
                         help="Bonus weight for Reverse QA relevance score")
-    parser.add_argument("--reverse-qa-num-questions", type=int, default=5)
+    parser.add_argument("--reverse-qa-num-questions", type=int, default=2)
     parser.add_argument("--reverse-qa-qg-backend",  type=str,  default="openai",
                         choices=["openai", "heuristic", "transformers", "auto"])
     parser.add_argument("--reverse-qa-openai-model", type=str, default="gpt-4o-mini")
     parser.add_argument("--reverse-qa-cache-path",  type=str,
                         default="results/reverse_qa_cache.jsonl")
+    parser.add_argument("--reverse-qa-bm25-weight", type=float, default=0.35,
+                        help="BM25 weight inside Reverse QA score")
+    parser.add_argument("--reverse-qa-cross-encoder-weight", type=float, default=0.55,
+                        help="CrossEncoder weight inside Reverse QA score")
+    parser.add_argument("--reverse-qa-evidence-weight", type=float, default=0.10,
+                        help="Answerability evidence weight inside Reverse QA score")
+    parser.add_argument("--reverse-qa-cross-encoder-model", type=str,
+                        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+                        help="Smaller CE used only for matching generated questions to the query")
     args = parser.parse_args()
 
+    # --- 2. Data Loading ---
+    # Load the raw retrieval results (the top-20 pool) and the original queries.
     results = _read_json(args.input_path)
     queries = load_queries(args.queries_path)
 
+    # --- 3. Model Initialization ---
+    # Load the necessary models (CrossEncoder / Doc2Query Bi-encoder) based on the selected mode.
     cross_encoder      = None
     doc2query_embedder = None
+
     if args.defense_mode == "cross_encoder":
         print(f"Loading CrossEncoder: {args.cross_encoder_model}")
         cross_encoder = CrossEncoder(args.cross_encoder_model)
@@ -605,6 +672,8 @@ def main() -> None:
     defended:  Dict[str, List[Dict]] = {}
     spoof_top1 = 0
 
+    # --- 4. Defense Reranking Loop ---
+    # Iterate over each query and apply the selected defense strategy to its retrieved chunks.
     for n, (qid, ranked) in enumerate(results.items(), 1):
         query = queries.get(qid, "")
         if args.defense_mode == "text":
@@ -631,8 +700,14 @@ def main() -> None:
                 reverse_qa_qg_backend=args.reverse_qa_qg_backend,
                 reverse_qa_openai_model=args.reverse_qa_openai_model,
                 reverse_qa_cache_path=args.reverse_qa_cache_path,
+                reverse_qa_bm25_weight=args.reverse_qa_bm25_weight,
+                reverse_qa_cross_encoder_weight=args.reverse_qa_cross_encoder_weight,
+                reverse_qa_evidence_weight=args.reverse_qa_evidence_weight,
+                reverse_qa_cross_encoder_model=args.reverse_qa_cross_encoder_model,
             )
 
+        # --- 5. Truncation and Metrics Tracking ---
+        # Keep only the top-K chunks after the reranking process and check if a spoof won the #1 spot.
         topk = reranked[: args.keep_top_k]
         defended[qid] = topk
         if topk and topk[0].get("is_spoof", False):
@@ -640,7 +715,13 @@ def main() -> None:
         if n % 100 == 0:
             print(f"Defended {n}/{len(results)} queries")
 
+    # --- 6. Save Results & Summary ---
     _write_json(args.output_path, defended)
+    logger.info(f"Defense processing complete. Saved defended results to: {args.output_path}")
+    
+    final_spoof_rate = spoof_top1 / len(defended) if defended else 0
+    logger.info(f"Top-1 spoof rate after defense: {final_spoof_rate:.3f}")
+
     print(f"\nSaved → {args.output_path}")
     print(f"Top-1 spoof rate after defense: "
           f"{spoof_top1/len(defended) if defended else 0:.3f}")

@@ -30,7 +30,9 @@ ones with the highest cosine similarity to the question.
 
 Inputs:
 - val_queries.jsonl: The target questions.
-- Parameters: --attack-mode (selects the attack families), --use-llm, 
+- Parameters: 
+    --attack-mode (selects the attack families),
+    --use-llm, 
     --candidates-per-style (how many to generate before filtering).
 
 Outputs (saved to data/processed/):
@@ -57,7 +59,6 @@ STOPWORDS = {
     "by", "and", "or", "from",
 }
 
-#TODO: n should be bigger if it on text
 def _kw(text: str, n: int = 6) -> List[str]:
     """ Extract keywords from the question for use in prompts."""
     tokens = re.findall(r"\b[A-Za-z][A-Za-z'\-]+\b", text.lower())
@@ -183,7 +184,6 @@ def _rank_by_embedding(
 #                         topic, plausible supporting details) but substitutes
 #                         the true answer with a distractor.
 
-#TODO: יכול להיות שקורה בדיוק מה שסשה רצה שנימנע ממנו- מביאים תשובה אחרת במקום התשובה הנכונה אבל בדרך שאי אפשר לזהו מה התשובה הנכונה ומה לא  (כמה תלמידים יש בכיתה? נכון - 10, לא נכון - 20)
 ATTACK_FAMILIES: Dict[str, List] = {
     "hypothetical_distractor": [
         (
@@ -476,6 +476,8 @@ def _make_chunk(query: Dict, vid: int, family: str, style: str,
 
 
 def main() -> None:
+    # --- CLI Arguments Parsing ---
+    # Define and parse all configuration parameters (paths, models, attack intensity).
     parser = argparse.ArgumentParser()
     parser.add_argument("--queries-path",   type=Path, default=Path("data/processed/val_queries.jsonl"))
     parser.add_argument("--output-path",    type=Path, default=Path("data/processed/spoof_chunks.jsonl"))
@@ -504,6 +506,8 @@ def main() -> None:
     parser.add_argument("--seed",        type=int,   default=42)
     args = parser.parse_args()
 
+    # --- Initialization & Data Loading ---
+    # Set random seed for reproducibility and load the target queries up to max_queries.
     random.seed(args.seed)
     queries = _read_jsonl(args.queries_path)[: args.max_queries]
 
@@ -522,8 +526,11 @@ def main() -> None:
     logger.info(f"Configuration: Generating {candidates_per_style} candidates per style, keeping top {args.keep_per_style}")
     # logger.info(f"Active Attack Families: {families}")
 
+    # --- Model Setup (Embedder & LLM) ---
+    # Load the SentenceTransformer model used to rank the generated candidates later.
     embedder = SentenceTransformer(args.embedding_model)
 
+    # Initialize the LLM (OpenAI) if requested. Fallback to rule-based if unavailable.
     llm: Optional[LLMGenerator] = None
     if args.use_llm:
         try:
@@ -537,6 +544,8 @@ def main() -> None:
         print("Mode: rule-based  (pass --use-llm for GPT-4o-mini)")
         logger.info("Operating in Rule-based mode (pass --use-llm to enable GPT).")
 
+    # --- Determine Attack Scope ---
+    # Map the chosen attack mode (e.g., 'hyde') to the specific prompt families.
     families = _attack_mode_to_families(args.attack_mode)
     styles_list = [s for fam in families for s, _ in ATTACK_FAMILIES[fam]]
     print(f"Families: {families}")
@@ -545,44 +554,61 @@ def main() -> None:
     rows: List[Dict] = []
     selection_scores: List[float] = []
 
+    # --- The Main Generation Loop ---
+    # Iterate over each target query to generate spoofs.
     for q_idx, q in enumerate(queries, start=1):
         question = q["question"]
         answer   = (q.get("answers") or ["unknown"])[0]
 
+        # Iterate over the selected attack families and their specific styles.
         for family in families:
             for style, tmpl in ATTACK_FAMILIES[family]:
                 candidates: List[Dict] = []
 
+                # Generate N candidates (drafts) for the current style to ensure variety.
                 for vid in range(candidates_per_style):
+                    # Cycle through variant hints to force the LLM to use different phrasings.
                     hint = VARIANT_HINTS[vid % len(VARIANT_HINTS)]
                     text = (
                         llm.generate(question, answer, style, tmpl, args.temperature, hint)
                         if llm
                         else _rule_based(question, answer, style, hint)
                     )
+
+                    # Security Check: Discard the candidate if it accidentally leaked the real answer.
                     if _contains_answer_leak(text, answer):
                         continue
+
                     candidates.append(_make_chunk(q, vid, family, style, text, candidates_per_style))
 
+                # Fallback: If all LLM candidates leaked the answer (or failed), use a safe rule-based chunk.
                 if not candidates:
                     fb = _rule_based(question, answer, style, "Evidence-free fallback.")
                     candidates.append(_make_chunk(q, 0, family, style, fb, candidates_per_style))
 
+                # --- Evolutionary Selection (Rank & Keep) ---
+                # Rank all generated candidates for this style by how closely their vectors match the query.
                 ranked   = _rank_by_embedding(question, candidates, embedder,
                                               args.embedding_model, args.embedding_batch_size)
+                
+                # Keep only the top-K performing candidates (1) and discard the rest.
                 selected = ranked[: args.keep_per_style]
                 rows.extend(selected)
                 selection_scores.extend([c["embedding_similarity_to_query"] for c in selected])
 
+        # Log progress periodically.
         if q_idx % 25 == 0:
             print(f"  {q_idx}/{len(queries)} queries | {len(rows)} chunks so far")
             logger.info(f"Progress: Processed {q_idx}/{len(queries)} queries. Generated {len(rows)} spoof chunks so far.")
 
+    # --- Save Results & Print Statistics ---
+    # Write all the winning spoof chunks to the output JSONL file.
     _write_jsonl(args.output_path, rows)
 
     print(f"\nGenerated {len(rows)} spoof chunks → {args.output_path}")
     logger.info(f"Attack generation complete! Saved {len(rows)} spoof chunks to {args.output_path}")
 
+    # Calculate and log embedding similarity statistics.
     if selection_scores:
         print(
             f"Similarity to query  mean={np.mean(selection_scores):.4f}  "
@@ -593,6 +619,7 @@ def main() -> None:
             f"Min: {np.min(selection_scores):.4f} | Max: {np.max(selection_scores):.4f}"
         )
 
+    # Log the breakdown of how many spoofs were generated per style.
     counts: Dict[str, int] = {}
     for r in rows:
         counts[r["attack_type"]] = counts.get(r["attack_type"], 0) + 1

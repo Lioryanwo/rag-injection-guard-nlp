@@ -26,7 +26,7 @@ def read_jsonl(path: Path):
 
 def main():
     # Path setup 
-    processed_dir = Path("data/processed_old")
+    processed_dir = Path("data/processed")
     queries_path = processed_dir / "val_queries.jsonl"
     qrels_path = processed_dir / "val_qrels.json"
     corpus_path = processed_dir / "corpus_chunks.jsonl"
@@ -59,7 +59,7 @@ def main():
         print("No spoofs found in spoof_chunks.jsonl!")
         return
 
-    N = 3 
+    N = 6
     sample_qids = random.sample(queries_with_spoofs, min(N, len(queries_with_spoofs)))
 
     for i, qid in enumerate(sample_qids, 1):

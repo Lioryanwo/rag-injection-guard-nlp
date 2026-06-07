@@ -10,6 +10,32 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from src.utils import get_logger
+
+"""
+=============================================================================
+Purpose:
+Generates publication-ready visualizations (bar charts) summarizing the overall 
+effectiveness of the multi-stage defense pipeline. 
+It compares the performance across 4 cumulative conditions:
+1. Attack Baseline
+2. Lexical Filter Only
+3. Filter + CrossEncoder
+4. Full Defense (Filter + CrossEncoder + Evidence/Reverse QA)
+
+Inputs:
+- --metrics: JSON file containing the aggregated results for conditions A, B, C, D.
+
+Outputs:
+- --output-dir: Directory where the .png charts will be saved.
+=============================================================================
+"""
+
+# Set up logger
+script_name = Path(__file__).stem
+folder_name = Path(__file__).parent.name
+logger = get_logger(name=script_name, group=folder_name)
+
 plt.rcParams.update({
     "font.family": "DejaVu Sans",
     "font.size": 13,
@@ -55,6 +81,10 @@ def add_labels(ax, bars):
 
 
 def plot_metric(values, title, ylabel, output_path, ylim=(0,1.1)):
+    """
+    Creates and saves a single bar chart comparing a specific metric across 
+    the four defense conditions.
+    """
     fig, ax = plt.subplots(figsize=(8,5))
 
     x = np.arange(len(METHODS))
@@ -84,6 +114,7 @@ def plot_metric(values, title, ylabel, output_path, ylim=(0,1.1)):
     plt.close(fig)
 
     print(f"Saved {output_path}")
+    logger.info(f"Saved plot: {output_path}")
 
 
 def main():
@@ -142,6 +173,7 @@ def main():
     ]
 
     print("\nGenerating plots...\n")
+    logger.info(f"Loaded metrics from {args.metrics}. Generating plots...")
 
     plot_metric(
         recall5,
@@ -173,6 +205,8 @@ def main():
 
     print("\nDone.")
     print(f"Graphs saved to: {args.output_dir}")
+    logger.info("All plots generated successfully.")
+    logger.info(f"Directory: {args.output_dir.absolute()}")
 
 
 if __name__ == "__main__":

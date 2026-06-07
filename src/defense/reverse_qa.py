@@ -1,3 +1,21 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import re
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, List, MutableMapping, Optional, Sequence, Tuple
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
+except ImportError:
+    pass
+
 """
 Reverse QA / Doc2Query defense signal for RAG spoofing experiments.
 
@@ -16,24 +34,6 @@ Then we compare those generated questions to the original user query.
 Real evidence chunks should generate at least one question that is close to the
 user query. Spoof chunks usually generate related-but-different questions.
 """
-
-from __future__ import annotations
-
-import hashlib
-import json
-import math
-import os
-import re
-from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Any, Dict, List, MutableMapping, Optional, Sequence, Tuple
-
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
-except ImportError:
-    pass
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _SENT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -274,8 +274,6 @@ def _generic_question_ratio(questions: Sequence[str]) -> float:
         if any(ql.startswith(p) for p in _GENERIC_QUESTION_PREFIXES):
             bad += 1
     return bad / len(questions)
-
-
 
 
 def _add_if_new(questions: List[str], question: str, limit: int) -> None:

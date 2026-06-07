@@ -11,6 +11,30 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
+from src.utils import get_logger
+
+"""
+=============================================================================
+Purpose:
+Aggregates evaluation metrics across all retrievers (MiniLM, BM25, Hybrid) 
+and pipeline conditions (Clean, Attacked, Defense). 
+Generates comprehensive comparative bar charts and a threshold sweep line plot 
+to visualize the trade-offs between recall preservation and spoof suppression.
+
+Inputs:
+- --results-dir: Directory containing all `{ret}_{condition}_metrics.json` files.
+
+Outputs:
+- --output-dir: Directory where the generated .png plots will be saved.
+  Also prints formatted ASCII summary tables to the standard output.
+=============================================================================
+"""
+
+# Set up logger
+script_name = Path(__file__).stem
+folder_name = Path(__file__).parent.name
+logger = get_logger(name=script_name, group=folder_name)
+
 # ── Presentation style ────────────────────────────────────────────────────────
 plt.rcParams.update({
     "font.family":      "DejaVu Sans",
@@ -86,6 +110,7 @@ OVERALL_SPOOF_ORDER = [
 
 def _load(path: Path) -> Optional[Any]:
     if not path.exists():
+        logger.warning(f"Missing expected metrics file: {path.name}")
         print(f"  [missing] {path.name}")
         return None
     with path.open("r", encoding="utf-8") as f:
@@ -176,6 +201,7 @@ def _grouped_bar(data: Dict[str, List], methods: List[str], ylabel: str,
     fig.savefig(output, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved {output.name}")
+    logger.info(f"Saved plot: {output.name}")
 
 
 def plot_recall(data: Dict[str, List], output: Path) -> None:
@@ -212,6 +238,10 @@ def plot_overall_spoof_win(data: Dict[str, List], output: Path) -> None:
 
 
 def plot_summary(recall_data: Dict, spoof_data: Dict, overall_spoof_data: Dict, output: Path) -> None:
+    """
+    Generates a 3x3 grid of subplots summarizing Recall@5, Attacked-query 
+    Spoof Win Rate, and Overall Spoof Rate across all three retrievers.
+    """
     fig, axes = plt.subplots(3, 3, figsize=(15, 11))
     fig.suptitle("RAG Spoof Attack & Reverse QA Defense — Summary", fontsize=18, y=1.01)
 
@@ -272,9 +302,14 @@ def plot_summary(recall_data: Dict, spoof_data: Dict, overall_spoof_data: Dict, 
     fig.savefig(output, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved {output.name}")
+    logger.info(f"Saved plot: {output.name}")
 
 
 def plot_threshold_sweep(sweep_rows: List[Dict], output: Path) -> None:
+    """
+    Plots the trade-off curve between Recall@5 and Spoof Win Rate across 
+    different suspicion thresholds to justify the chosen threshold value.
+    """
     thresholds  = [r["threshold"] for r in sweep_rows]
     recall_vals = [r["recall@5"] for r in sweep_rows]
     spoof_vals  = [r["top1_spoof_win_rate"] for r in sweep_rows]
@@ -302,6 +337,7 @@ def plot_threshold_sweep(sweep_rows: List[Dict], output: Path) -> None:
     fig.savefig(output, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved {output.name}")
+    logger.info(f"Saved plot: {output.name}")
 
 
 def main() -> None:
@@ -312,6 +348,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     print("Loading metrics…")
+    logger.info("Loading metrics from results directory...")
     recall_data: Dict[str, List[Optional[float]]] = {m: [] for m in METHOD_FILES}
     spoof_data:  Dict[str, List[Optional[float]]] = {m: [] for m in METHOD_FILES if m in SPOOF_METHODS}
     overall_spoof_data: Dict[str, List[Optional[float]]] = {m: [] for m in OVERALL_SPOOF_ORDER}
@@ -333,6 +370,7 @@ def main() -> None:
             overall_spoof_data[method].append(overall)
 
     print("\nGenerating plots…")
+    logger.info("Generating comparative plots...")
     plot_recall(recall_data, args.output_dir / "recall_under_attack.png")
     plot_spoof_win(spoof_data, args.output_dir / "spoof_win_rate_attacked_queries.png")
     # Backward-compatible filename: this now also uses attacked-query spoof metrics.
@@ -344,6 +382,7 @@ def main() -> None:
     if sweep and isinstance(sweep, dict) and sweep.get("sweep"):
         plot_threshold_sweep(sweep["sweep"], args.output_dir / "threshold_sweep.png")
     else:
+        logger.warning("Threshold sweep data not found. Skipping plot.")
         print("  [skip] threshold sweep not found")
 
     print("\n" + "=" * 76)

@@ -7,7 +7,30 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from src.evaluation.llm_client import OpenAIClient
+from src.utils import get_logger
 
+"""
+=============================================================================
+Purpose:
+Evaluates the quality of retrieved contexts using an LLM as a judge (LLM-as-a-Judge).
+Instead of checking for exact string matches or specific document IDs, this script 
+reads the retrieved text and semantically evaluates if it genuinely supports the 
+gold answer, or if it acts as a misleading distractor (e.g., a successful spoof).
+
+Inputs:
+- --results-path: A JSON file containing the retrieved chunks for each query.
+- --queries-path: A JSONL file containing the original questions and gold answers.
+
+Outputs:
+- --output-path: A JSON file containing the LLM's detailed judgment for each 
+                 evaluated chunk, along with an aggregated metrics summary.
+=============================================================================
+"""
+
+# Set up logger
+script_name = Path(__file__).stem
+folder_name = Path(__file__).parent.name
+logger = get_logger(name=script_name, group=folder_name)
 
 JUDGE_PROMPT = """
 You are evaluating whether a retrieved context correctly supports answering a question.
@@ -38,7 +61,7 @@ Definitions:
 - answer_correctness refers to whether an answer generated from this context would likely match the gold answer.
 """.strip()
 
-
+# --- Helper functions ---
 def _load_json(path: Path) -> Dict[str, List[Dict[str, Any]]]:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
@@ -79,6 +102,8 @@ def _extract_json(text: str) -> Dict[str, Any]:
             pass
 
     # Safe fallback: treat as unsupported/misleading rather than silently inflating quality.
+    logger.warning("Failed to parse LLM response as JSON. Falling back to default negative evaluation.")
+
     return {
         "supports_answer": False,
         "misleading": True,
@@ -104,14 +129,19 @@ def _normalize_label(value: Any, allowed: set[str], default: str) -> str:
 
 
 def judge_chunk(client: OpenAIClient, question: str, context: str, gold_answer: str) -> Dict[str, Any]:
+    """Use the LLM to judge the quality of a retrieved chunk in supporting the gold answer."""
+    # Format the prompt
     prompt = JUDGE_PROMPT.format(
         question=question,
         gold_answer=gold_answer,
         context=context,
     )
+
+    # Get the LLM's judgment
     raw = client.generate(prompt)
     parsed = _extract_json(raw)
 
+    # normalize fields with robust defaults
     supports_answer = _normalize_bool(parsed.get("supports_answer", False))
     misleading = _normalize_bool(parsed.get("misleading", False))
     answer_correctness = _normalize_label(
@@ -136,6 +166,7 @@ def judge_chunk(client: OpenAIClient, question: str, context: str, gold_answer: 
 
 
 def main() -> None:
+    # --- Parse command-line arguments ---
     parser = argparse.ArgumentParser()
     parser.add_argument("--results-path", type=Path, required=True)
     parser.add_argument("--output-path", type=Path, required=True)
@@ -144,9 +175,14 @@ def main() -> None:
     parser.add_argument("--max-queries", type=int, default=100)
     args = parser.parse_args()
 
+    # --- Load data ---
+    logger.info(f"Loading data... Max queries set to {args.max_queries}, checking Top-{args.top_k}")
+
     retrieval_all = _load_json(args.results_path)
     retrieval = dict(list(retrieval_all.items())[: args.max_queries])
     queries = _load_queries(args.queries_path)
+
+    # --- Evaluate with LLM-as-a-Judge ---
     client = OpenAIClient()
 
     judged: List[Dict[str, Any]] = []
@@ -159,6 +195,7 @@ def main() -> None:
         gold_answer = (q.get("answers") or [""])[0]
 
         judged_chunks = []
+        # Only judge the top-k retrieved chunks to manage cost and focus on the most influential contexts.
         for chunk in chunks[: args.top_k]:
             judgment = judge_chunk(
                 client=client,
@@ -178,9 +215,12 @@ def main() -> None:
         if i % 25 == 0:
             print(f"Judged {i}/{len(retrieval)} queries")
 
+    logger.info("Aggregating final metrics...")
+
     total_with_top1 = sum(1 for item in judged if item["judged_chunks"])
     correct = misleading = supports = 0
 
+    # Aggregate metrics based on the top-1 judged chunk for each query.
     for item in judged:
         if not item["judged_chunks"]:
             continue
@@ -198,6 +238,8 @@ def main() -> None:
     }
 
     _save_json({"summary": summary, "results": judged}, args.output_path)
+    
+    logger.info("Evaluation complete. Summary metrics:")
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 
 

@@ -4,6 +4,30 @@ import argparse
 import json
 from pathlib import Path
 from typing import Dict, List
+from src.utils import get_logger
+
+"""
+=============================================================================
+Purpose:
+A utility script to create a "naive" Top-K view from a larger retrieval pool.
+For example, it takes a Top-20 retrieval result and strictly truncates it 
+to a Top-5 result. This is used to create a naive baseline comparator 
+to prove that taking a larger pool (Top-20) and applying a smart defense reranker 
+is better than simply taking the Top-5.
+
+Inputs:
+- --input-path: JSON file containing the larger retrieval pool (e.g., Top-20).
+- --top-k: The maximum number of documents to keep per query (default: 5).
+
+Outputs:
+- --output-path: JSON file containing the truncated results.
+=============================================================================
+"""
+
+# Set up logger
+script_name = Path(__file__).stem
+folder_name = Path(__file__).parent.name
+logger = get_logger(name=script_name, group=folder_name)
 
 
 def _load(path: Path) -> Dict[str, List[dict]]:
@@ -32,6 +56,9 @@ def main() -> None:
     trimmed = trim_top_k(results, args.top_k)
     _save(args.output_path, trimmed)
     print(f"Saved top-{args.top_k} view -> {args.output_path}")
+
+    logger.info(f"Successfully created Top-{args.top_k} view for {len(trimmed)} queries.")
+    logger.info(f"Saved to: {args.output_path}")
 
 
 if __name__ == "__main__":

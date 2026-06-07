@@ -5,6 +5,11 @@ from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 
+"""
+OpenAIClient is a simple wrapper around the OpenAI API to generate responses from a given prompt.
+"""
+
+
 class OpenAIClient:
     def __init__(self):
         api_key = os.getenv("OPENAI_API_KEY")

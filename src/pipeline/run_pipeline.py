@@ -4,6 +4,7 @@ import time
 import subprocess
 import sys
 from pathlib import Path
+from src.utils import get_logger
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -72,9 +73,9 @@ def setup_run_environment():
 
 
 def run(cmd: list) -> None:
-    print("\n" + "=" * 72)
-    print("RUN:", " ".join(str(c) for c in cmd))
-    print("=" * 72)
+    logger = get_logger(name=Path(__file__).parent.name, group=Path(__file__).stem)
+    cmd_str = " ".join(str(c) for c in cmd)
+    logger.info(f"RUN: {cmd_str}")
     subprocess.run([str(c) for c in cmd], check=True, cwd=ROOT)
 
 
@@ -169,7 +170,11 @@ def main() -> None:
     # Set up a unique logging directory for this run.
     setup_run_environment()
 
+    # Initialize logger
+    logger = get_logger(name=Path(__file__).parent.name, group=Path(__file__).stem)
+
     # ── 1. Corpus ─────────────────────────────────────────────────────────────
+    logger.info("Starting Data Prep: Creating corpus, chunking, and building clean indexes.")
     run([py, "-m", "src.corpus.create_corpus",
          "--train-size", "5000", "--validation-size", "1000"])
     run([
@@ -192,18 +197,23 @@ def main() -> None:
 
     # ── 2. Generate spoof chunks ───────────────────────────────────────────────
     # "semantically attractive but evidence-poor retrieval obstruction"
-    run([
-        py, "-m", "src.attack.generate_attacks",
-        "--queries-path",          "data/processed/val_queries.jsonl",
-        "--output-path",           "data/processed/spoof_chunks.jsonl",
-        "--candidates-per-style",  str(ATTACK_CANDIDATES_PER_STYLE),
-        "--keep-per-style",        str(ATTACK_KEEP_PER_STYLE),
-        "--embedding-model",       ATTACK_EMBEDDING_MODEL,
-        "--max-queries",           str(ATTACK_MAX_QUERIES),
-        "--attack-mode",           ATTACK_MODE,
-        "--use-llm",
-        "--temperature",           "0.9",
-    ])
+    # note: Added check if the output already exists before running. if we want to regenerate, we need to delete the existing file.
+    spoof_path = Path("data/processed/spoof_chunks.jsonl")
+    if spoof_path.exists():
+        logger.info(f"Spoof chunks already exist at {spoof_path}. Skipping attack generation.")
+    else:
+        run([
+            py, "-m", "src.attack.generate_attacks",
+            "--queries-path",          "data/processed/val_queries.jsonl",
+            "--output-path",           "data/processed/spoof_chunks.jsonl",
+            "--candidates-per-style",  str(ATTACK_CANDIDATES_PER_STYLE),
+            "--keep-per-style",        str(ATTACK_KEEP_PER_STYLE),
+            "--embedding-model",       ATTACK_EMBEDDING_MODEL,
+            "--max-queries",           str(ATTACK_MAX_QUERIES),
+            "--attack-mode",           ATTACK_MODE,
+            "--use-llm",
+            "--temperature",           "0.9",
+        ])
 
     # ── 3. Standard retrieval baselines ───────────────────────────────────────
     retrievers_base = [
@@ -220,6 +230,8 @@ def main() -> None:
     ]
 
     for ret, module, extra in retrievers_base:
+        logger.info(f"Running baseline evaluation for retriever: {ret}")
+
         # 3a. Clean Top-5 (standard RAG — no attack)
         run(retrieval_run(py, module,
                           "data/processed/val_queries.jsonl",
@@ -280,6 +292,7 @@ def main() -> None:
                      attacked_only=True)
 
     # ── 4. Inject attack + static query-blind filter ───────────────────────────
+    logger.info("Injecting spoof chunks into the clean corpus...")
     run([
         py, "-m", "src.attack.inject_attacks",
         "--real-chunks",  "data/processed/corpus_chunks.jsonl",
@@ -296,6 +309,7 @@ def main() -> None:
     ])
 
     # ── 5. Attack indexes ──────────────────────────────────────────────────────
+    logger.info("Building attacked FAISS/BM25 indexes from augmented chunks.")
     for idx, model in [
         ("indexes/minilm_attack", "sentence-transformers/all-MiniLM-L6-v2"),
         ("indexes/bge_m3_attack", "BAAI/bge-m3"),
@@ -328,7 +342,7 @@ def main() -> None:
     #   attack_defense         → query-aware Doc2Query + CrossEncoder defense
     #
     for ret, module, extra in retrievers_attack:
-        # 6a. Attack pool Top-20
+        logger.info(f"Running attack evaluation for retriever: {ret}")        # 6a. Attack pool Top-20
         run(retrieval_run(py, module,
                           "data/processed/val_queries.jsonl",
                           RETRIEVAL_POOL_TOP_K,
@@ -370,6 +384,7 @@ def main() -> None:
                  attacked_only=True)
 
     # ── 7. Threshold sweep ────────────────────────────────────────────────────
+    logger.info("Running threshold sweep to find optimal defense parameters.")
     run([
         py, "-m", "src.experiments.threshold_sweep",
         "--input-path",         "results/retrieval/minilm_attack_results.json",
@@ -381,8 +396,10 @@ def main() -> None:
     ])
 
     # ── 8. Plots ───────────────────────────────────────────────────────────────
+    logger.info("Pipeline execution complete. Generating final figures...")
     run([py, "-m", "src.evaluation.plot_results", "--output-dir", "results/figures"])
 
+    logger.info("All tasks finished successfully. Shutting down pipeline.")
     print("\n" + "=" * 72)
     print("PIPELINE COMPLETE")
     print()

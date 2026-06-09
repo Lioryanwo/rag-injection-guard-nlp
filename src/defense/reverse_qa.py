@@ -7,7 +7,11 @@ import os
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from time import time
 from typing import Any, Dict, List, MutableMapping, Optional, Sequence, Tuple
+import concurrent.futures
+from openai import OpenAI
+from src.utils import get_logger
 
 try:
     from dotenv import load_dotenv
@@ -15,6 +19,7 @@ try:
     load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 except ImportError:
     pass
+
 
 """
 Reverse QA / Doc2Query defense signal for RAG spoofing experiments.
@@ -34,6 +39,12 @@ Then we compare those generated questions to the original user query.
 Real evidence chunks should generate at least one question that is close to the
 user query. Spoof chunks usually generate related-but-different questions.
 """
+
+# Set up logger
+script_name = Path(__file__).stem
+folder_name = Path(__file__).parent.name
+logger = get_logger(name=script_name, group=folder_name)
+
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _SENT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -68,7 +79,7 @@ _GENERIC_QUESTION_PREFIXES = (
 class ReverseQAConfig:
     # IMPORTANT: keep this at 20 for latency. The reranker only touches Top-K.
     top_k: int = 20
-    num_questions: int = 2
+    num_questions: int = 5
 
     # Reverse QA matching weights.
     bm25_weight: float = 0.35
@@ -326,7 +337,7 @@ class QuestionGenerator:
     def __init__(self, config: ReverseQAConfig):
         self.config = config
         self._hf_pipeline = None
-        self._openai_client = None
+        self._openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     def generate(self, document_text: str) -> List[str]:
         backend = self.config.qg_backend.lower()
@@ -344,34 +355,42 @@ class QuestionGenerator:
                     raise
         return self._generate_heuristic(document_text)
 
-    def _generate_openai(self, document_text: str) -> List[str]:
-        from openai import OpenAI
+    
+    def _generate_openai(self, document_text: str, max_retries=5) -> List[str]:
+        for attempt in range(max_retries):
+            try:
+                prompt = (
+                    "Generate exactly {n} short factual questions that are answered directly by the document.\n"
+                    "Rules:\n"
+                    "- Use only facts explicitly stated in the document.\n"
+                    "- Prefer questions about concrete entities, dates, numbers, roles, places, or events.\n"
+                    "- Avoid vague questions such as 'What does the passage discuss?'.\n"
+                    "- Avoid summary/background questions.\n"
+                    "- Each question must have a specific answer span in the document.\n"
+                    "- Return only a JSON list of strings.\n\n"
+                    "Document:\n{doc}"
+                ).format(n=self.config.num_questions, doc=document_text[:3000])
 
-        if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                resp = self._openai_client.chat.completions.create(
+                    model=self.config.openai_model,
+                    messages=[
+                        {"role": "system", "content": "You generate concrete answerable retrieval-evaluation questions."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.0,
+                )
+                content = resp.choices[0].message.content or "[]"
+                return _parse_questions(content, self.config.num_questions)
+            
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"OpenAI API failed completely after {max_retries} attempts: {e}")
+                    raise e
+                
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s, 8s, ...
+                logger.warning(f"Connection issue with OpenAI: {e}. Retrying in {wait_time}s (Attempt {attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
 
-        prompt = (
-            "Generate exactly {n} short factual questions that are answered directly by the document.\n"
-            "Rules:\n"
-            "- Use only facts explicitly stated in the document.\n"
-            "- Prefer questions about concrete entities, dates, numbers, roles, places, or events.\n"
-            "- Avoid vague questions such as 'What does the passage discuss?'.\n"
-            "- Avoid summary/background questions.\n"
-            "- Each question must have a specific answer span in the document.\n"
-            "- Return only a JSON list of strings.\n\n"
-            "Document:\n{doc}"
-        ).format(n=self.config.num_questions, doc=document_text[:3000])
-
-        resp = self._openai_client.chat.completions.create(
-            model=self.config.openai_model,
-            messages=[
-                {"role": "system", "content": "You generate concrete answerable retrieval-evaluation questions."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-        )
-        content = resp.choices[0].message.content or "[]"
-        return _parse_questions(content, self.config.num_questions)
 
     def _generate_transformers(self, document_text: str) -> List[str]:
         from transformers import pipeline
@@ -385,6 +404,7 @@ class QuestionGenerator:
         out = self._hf_pipeline(prompt, max_new_tokens=180, do_sample=False)[0]["generated_text"]
         return _parse_questions(out, self.config.num_questions)
 
+    
     def _generate_heuristic(self, document_text: str) -> List[str]:
         """
         Deterministic fallback.
@@ -558,12 +578,13 @@ class ReverseQAScorer:
         self.cache.set(key, result)
         return result
 
+
     def rerank(self, original_query: str, docs: Sequence[MutableMapping[str, Any]]) -> List[Dict[str, Any]]:
         top_docs = [dict(d) for d in docs[: self.config.top_k]]
         tail = [dict(d) for d in docs[self.config.top_k :]]
 
-        reverse_scores: List[float] = []
-        for doc in top_docs:
+        # Process a single document 
+        def process_doc(doc):
             text = _extract_text(doc, self.config.text_keys)
             info = self.score_document(original_query, text) if text else {
                 "generated_questions": [],
@@ -576,8 +597,18 @@ class ReverseQAScorer:
                 "reverse_qa_score": 0.0,
             }
             doc.update(info)
-            reverse_scores.append(float(info["reverse_qa_score"]))
+            return float(info["reverse_qa_score"])
 
+        reverse_scores: List[float] = []
+        
+        # Run with limit of 3 workers at a time
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            results = executor.map(process_doc, top_docs)  # executor.map is make sure the results come back in the same order as top_docs, so we can zip them together later.
+            
+            for score in results:
+                reverse_scores.append(score)
+
+        # Normalize and combine scores
         norm_reverse = _minmax(reverse_scores) if self.config.normalize_scores else reverse_scores
         for doc, rq_norm in zip(top_docs, norm_reverse):
             base = _base_score(doc, self.config.base_score_key)
@@ -590,9 +621,11 @@ class ReverseQAScorer:
             doc["final_score"] = doc["score_after_reverse_qa"]
             doc["reverse_qa_raw_score"] = round(raw_rq, 6)
 
+        # Sort by the new score and assign reverse QA ranks
         top_docs.sort(key=lambda d: float(d.get("score_after_reverse_qa", d.get("score", 0.0))), reverse=True)
         for rank, doc in enumerate(top_docs, 1):
             doc["reverse_qa_rank"] = rank
+            
         return top_docs + tail
 
 

@@ -12,7 +12,7 @@ data/processed_*/
 indexes/
 results/retrieval/
 results/judge/
-results/figures/
+#results/figures/
 
 # Keep results structure but not files
 !results/.gitkeep

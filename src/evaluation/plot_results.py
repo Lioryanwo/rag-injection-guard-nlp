@@ -58,11 +58,11 @@ RETRIEVER_LABELS = ["MiniLM\n(dense)", "BM25\n(sparse)", "Hybrid"]
 # ── Colors ────────────────────────────────────────────────────────────────────
 COLORS = {
     "Baseline Top-5":          "#2ecc71", 
-    "Attacked (No Defense)":   "#f39c12", 
     "Baseline Top-20":         "#27ae60",
+    "Attacked (No Defense)":   "#e74c3c", # אדום רגיל - ההתקפה על ה-Top 5
+    "Attack Top-20 (ceiling)": "#c0392b", # אדום כהה - תקרת ההתקפה (יופיע רק ב-Recall)
     "No-query filter":         "#95a5a6",
     "CE Defense":              "#2980b9", 
-    "Attack Top-20 (ceiling)": "#e74c3c",
     "Baseline + Defense":      "#1a9850",
 }
 
@@ -70,7 +70,7 @@ COLORS = {
 METHOD_FILES = {
     "Baseline Top-5":          "{ret}_baseline_metrics.json",
     "Baseline Top-20":         "{ret}_baseline_top20_metrics.json",
-    "Attack Top-20 (ceiling)": "{ret}_attack_top20_metrics.json",
+    "Attack Top-20 (ceiling)": "{ret}_attack_top20_metrics.json", # חזר! חייבים אותו ל-Recall
     "Attacked (No Defense)":   "{ret}_attack_naive_top5_metrics.json",
     "No-query filter":         "{ret}_no_query_metrics.json",
     "CE Defense":              "{ret}_defense_metrics.json",
@@ -83,8 +83,7 @@ RESULT_FILES = {
 }
 
 SPOOF_METHODS = {
-    "Attack Top-20 (ceiling)",
-    "Attacked (No Defense)",
+    "Attacked (No Defense)", 
     "No-query filter",
     "CE Defense",
 }
@@ -97,8 +96,7 @@ RECALL_ORDER = [
 ]
 
 SPOOF_ORDER = [
-    "Attack Top-20 (ceiling)",
-    "Attacked (No Defense)",
+    "Attacked (No Defense)", 
     "No-query filter",
     "CE Defense",
 ]
@@ -110,7 +108,7 @@ OVERALL_SPOOF_ORDER = [
 
 RECALL_TOP20_VS_DEFENSE_ORDER = [
     "Baseline Top-20",
-    "Attack Top-20 (ceiling)",
+    "Attack Top-20 (ceiling)", 
     "CE Defense",
 ]
 
@@ -268,7 +266,7 @@ def plot_summary(recall_data: Dict, spoof_data: Dict, overall_spoof_data: Dict, 
     spoof_methods  = SPOOF_ORDER
     overall_methods = OVERALL_SPOOF_ORDER
     short_r = ["Baseline", "Attacked", "No-query", "Defense"]
-    short_s = ["Attack\nceiling", "Attacked", "No-query", "Defense"]
+    short_s = ["Attacked", "No-query", "Defense"]  
     short_o = ["Attacked", "Defense"]
 
     for col, (_ret, label) in enumerate(zip(RETRIEVERS, RETRIEVER_LABELS)):

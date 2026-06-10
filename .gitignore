@@ -40,3 +40,6 @@ build/
 # log
 logs/*
 !logs/.gitkeep
+
+# Results
+results/reverse_qa_cache.jsonl

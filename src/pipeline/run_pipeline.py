@@ -39,7 +39,7 @@ DEFENSE_BATCH_SIZE             = 16
 # Generates 5 questions per chunk via GPT-4o-mini and scores them against the
 # original query. Adds a relevance bonus that penalizes spoof chunks.
 # Trade-off: ~20x slower per query (LLM call per chunk), but cached after first run.
-USE_REVERSE_QA            = True
+USE_REVERSE_QA            = False
 REVERSE_QA_WEIGHT         = 0.25    # bonus weight in final score
 REVERSE_QA_NUM_QUESTIONS  = 5
 REVERSE_QA_QG_BACKEND     = "openai"

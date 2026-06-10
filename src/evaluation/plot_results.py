@@ -57,54 +57,61 @@ RETRIEVER_LABELS = ["MiniLM\n(dense)", "BM25\n(sparse)", "Hybrid"]
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 COLORS = {
-    "Clean Top-5":             "#2ecc71",
-    "Attack Naive 5/20":       "#f39c12",
+    "Baseline Top-5":          "#2ecc71", 
+    "Attacked (No Defense)":   "#f39c12", 
+    "Baseline Top-20":         "#27ae60",
     "No-query filter":         "#95a5a6",
-    "Reverse QA Defense":      "#2980b9",
+    "CE Defense":              "#2980b9", 
     "Attack Top-20 (ceiling)": "#e74c3c",
-    "Clean + Defense":         "#1a9850",
+    "Baseline + Defense":      "#1a9850",
 }
 
 # ── File mapping ──────────────────────────────────────────────────────────────
-# Reverse QA writes {ret}_defense_metrics.json and {ret}_defense_results.json.
 METHOD_FILES = {
-    "Clean Top-5":             "{ret}_baseline_metrics.json",
+    "Baseline Top-5":          "{ret}_baseline_metrics.json",
+    "Baseline Top-20":         "{ret}_baseline_top20_metrics.json",
     "Attack Top-20 (ceiling)": "{ret}_attack_top20_metrics.json",
-    "Attack Naive 5/20":       "{ret}_attack_naive_top5_metrics.json",
+    "Attacked (No Defense)":   "{ret}_attack_naive_top5_metrics.json",
     "No-query filter":         "{ret}_no_query_metrics.json",
-    "Reverse QA Defense":      "{ret}_defense_metrics.json",
-    "Clean + Defense":         "{ret}_baseline_defense_metrics.json",
+    "CE Defense":              "{ret}_defense_metrics.json",
+    "Baseline + Defense":      "{ret}_baseline_defense_metrics.json",
 }
 
 RESULT_FILES = {
-    "Attack Naive 5/20":       "{ret}_attack_naive_top5_results.json",
-    "Reverse QA Defense":      "{ret}_defense_results.json",
+    "Attacked (No Defense)":   "{ret}_attack_naive_top5_results.json",
+    "CE Defense":              "{ret}_defense_results.json",
 }
 
 SPOOF_METHODS = {
     "Attack Top-20 (ceiling)",
-    "Attack Naive 5/20",
+    "Attacked (No Defense)",
     "No-query filter",
-    "Reverse QA Defense",
+    "CE Defense",
 }
 
 RECALL_ORDER = [
-    "Clean Top-5",
-    "Attack Naive 5/20",
+    "Baseline Top-5",
+    "Attacked (No Defense)",
     "No-query filter",
-    "Reverse QA Defense",
+    "CE Defense",
 ]
 
 SPOOF_ORDER = [
     "Attack Top-20 (ceiling)",
-    "Attack Naive 5/20",
+    "Attacked (No Defense)",
     "No-query filter",
-    "Reverse QA Defense",
+    "CE Defense",
 ]
 
 OVERALL_SPOOF_ORDER = [
-    "Attack Naive 5/20",
-    "Reverse QA Defense",
+    "Attacked (No Defense)",
+    "CE Defense",
+]
+
+RECALL_TOP20_VS_DEFENSE_ORDER = [
+    "Baseline Top-20",
+    "Attack Top-20 (ceiling)",
+    "CE Defense",
 ]
 
 
@@ -204,6 +211,17 @@ def _grouped_bar(data: Dict[str, List], methods: List[str], ylabel: str,
     logger.info(f"Saved plot: {output.name}")
 
 
+def plot_top20_vs_defense_recall(data: Dict[str, List], output: Path) -> None:
+    _grouped_bar(
+        data=data,
+        methods=RECALL_TOP20_VS_DEFENSE_ORDER,
+        ylabel="Recall",
+        title="Recall Comparison: Top-20 vs Defense (Top-5/20)",
+        output=output,
+        ylim_top=1.10,
+    )
+
+
 def plot_recall(data: Dict[str, List], output: Path) -> None:
     _grouped_bar(
         data=data,
@@ -245,12 +263,13 @@ def plot_summary(recall_data: Dict, spoof_data: Dict, overall_spoof_data: Dict, 
     fig, axes = plt.subplots(3, 3, figsize=(15, 11))
     fig.suptitle("RAG Spoof Attack & Reverse QA Defense — Summary", fontsize=18, y=1.01)
 
+    
     recall_methods = RECALL_ORDER
     spoof_methods  = SPOOF_ORDER
     overall_methods = OVERALL_SPOOF_ORDER
-    short_r = ["Clean", "Naive 5/20", "No-query", "RevQA"]
-    short_s = ["Attack\nceiling", "Naive 5/20", "No-query", "RevQA"]
-    short_o = ["Attack", "RevQA"]
+    short_r = ["Baseline", "Attacked", "No-query", "Defense"]
+    short_s = ["Attack\nceiling", "Attacked", "No-query", "Defense"]
+    short_o = ["Attacked", "Defense"]
 
     for col, (_ret, label) in enumerate(zip(RETRIEVERS, RETRIEVER_LABELS)):
         # Row 0: Recall
@@ -290,12 +309,13 @@ def plot_summary(recall_data: Dict, spoof_data: Dict, overall_spoof_data: Dict, 
         ax.set_axisbelow(True)
 
     legend_patches = [
-        mpatches.Patch(color=COLORS["Clean Top-5"],             label="Clean baseline"),
-        mpatches.Patch(color=COLORS["Attack Top-20 (ceiling)"], label="Attack ceiling"),
-        mpatches.Patch(color=COLORS["Attack Naive 5/20"],       label="Attack naive"),
-        mpatches.Patch(color=COLORS["No-query filter"],         label="No-query filter"),
-        mpatches.Patch(color=COLORS["Reverse QA Defense"],      label="Reverse QA Defense"),
+        mpatches.Patch(color=COLORS["Baseline Top-5"],          label="Baseline (Safe)"),
+        mpatches.Patch(color=COLORS["Attack Top-20 (ceiling)"], label="Attack Ceiling"),
+        mpatches.Patch(color=COLORS["Attacked (No Defense)"],   label="Attacked (No Defense)"),
+        mpatches.Patch(color=COLORS["No-query filter"],         label="No-query Filter"),
+        mpatches.Patch(color=COLORS["CE Defense"],              label="Our Defense (CE+D2Q)"),
     ]
+
     fig.legend(handles=legend_patches, loc="lower center", ncol=5,
                fontsize=11, framealpha=0.9, bbox_to_anchor=(0.5, -0.03))
     fig.tight_layout(pad=2.2)
@@ -317,13 +337,13 @@ def plot_threshold_sweep(sweep_rows: List[Dict], output: Path) -> None:
 
     fig, ax = plt.subplots(figsize=(9, 5))
     ax.plot(thresholds, recall_vals, marker="o", linewidth=2.5, markersize=8,
-            color=COLORS["Reverse QA Defense"], label="Recall@5", zorder=4)
+            color=COLORS["CE Defense"], label="Recall@5", zorder=4)
     ax.plot(thresholds, spoof_vals, marker="s", linewidth=2.5, markersize=8,
             color=COLORS["Attack Top-20 (ceiling)"], label="Top-1 Spoof Win Rate", zorder=4)
     ax.axvline(chosen_th, color="#555555", linewidth=2.0,
                linestyle="--", label=f"Chosen threshold = {chosen_th}", zorder=3)
     ax.axvspan(0.0, chosen_th, alpha=0.06,
-               color=COLORS["Reverse QA Defense"], zorder=1)
+               color=COLORS["CE Defense"], zorder=1)
 
     ax.set_xlabel("Suspicion Threshold", fontsize=14)
     ax.set_ylabel("Score", fontsize=14)
@@ -356,7 +376,12 @@ def main() -> None:
     for ret in RETRIEVERS:
         for method, tmpl in METHOD_FILES.items():
             m = _load(args.results_dir / tmpl.format(ret=ret))
-            recall_data[method].append(_metric(m, "recall@5", "recall_at_5"))
+
+            if "Top-20" in method:
+                recall_data[method].append(_metric(m, "recall@20", "recall_at_20"))
+            else:
+                recall_data[method].append(_metric(m, "recall@5", "recall_at_5"))            
+            
             if method in spoof_data:
                 spoof_data[method].append(_metric(m, "top1_spoof_win_rate", "spoof_win"))
 
@@ -377,6 +402,8 @@ def main() -> None:
     plot_spoof_win(spoof_data, args.output_dir / "spoof_win_rate.png")
     plot_overall_spoof_win(overall_spoof_data, args.output_dir / "overall_top1_spoof_rate.png")
     plot_summary(recall_data, spoof_data, overall_spoof_data, args.output_dir / "summary.png")
+
+    plot_top20_vs_defense_recall(recall_data, args.output_dir / "recall_top20_vs_defense_top5.png")
 
     sweep = _load(args.results_dir / "minilm_threshold_sweep.json")
     if sweep and isinstance(sweep, dict) and sweep.get("sweep"):

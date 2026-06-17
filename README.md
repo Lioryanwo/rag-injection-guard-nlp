@@ -13,42 +13,24 @@
 
 <p align="center">
   <b>Can a RAG system be misled before the LLM ever generates an answer?</b><br/>
-  This project studies semantic retrieval poisoning: fake but relevant-looking chunks that rank above legitimate evidence.
-</p>
-
-<p align="center">
-<<<<<<< HEAD
-  <img width="905" height="653" alt="image" src="https://github.com/user-attachments/assets/d7219a81-4c67-4063-b289-0361ddf98ccd" />
-=======
-  <img src="./assets/figures/retrieval_poisoning_overview.png" width="920" alt="Retrieval poisoning concept overview" />
->>>>>>> e6350a5 (Add Reverse QA defense layer)
+  This project studies retrieval poisoning attacks against RAG systems: synthetic chunks that look relevant to the query but do not contain the real supporting evidence.
 </p>
 
 ---
 
 ## Executive Summary
 
-Retrieval-Augmented Generation (RAG) systems depend on retrieved evidence. If the retriever returns misleading chunks, the LLM receives bad context and may generate an ungrounded answer even if the model itself was never attacked.
+Retrieval-Augmented Generation (RAG) systems rely on the retrieved context. If the retriever returns misleading chunks, the LLM can receive bad evidence and produce an unsupported answer even if the model itself was not attacked.
 
-This project evaluates a retrieval-stage attack called **RAG spoofing** or **retrieval poisoning**. The attacker injects synthetic chunks into the corpus. These chunks are crafted to be semantically close to the user query while omitting the true supporting evidence.
+This project evaluates a retrieval-stage attack called **RAG spoofing**. The attacker injects synthetic chunks into the corpus. These chunks are optimized to be semantically or lexically attractive to the retriever while omitting the true answer evidence.
 
-> **Core finding:** semantic spoof chunks can dominate Top-1 retrieval rankings across dense, sparse, and hybrid retrievers. Reranking-based defenses recover only a limited part of the lost recall.
+> **Main finding:** spoof chunks strongly dominate Top-1 retrieval across dense, sparse, and hybrid retrievers. A Cross-Encoder defense improves Recall@5 in some cases, but it does not fully suppress spoof dominance.
 
 ---
 
-## Visual Overview: What Is RAG Spoofing?
+## What Is RAG Spoofing?
 
-<p align="center">
-<<<<<<< HEAD
-  <img width="1033" height="682" alt="image" src="https://github.com/user-attachments/assets/e96cb620-7c8c-40bb-97c7-cc78da15c7aa" />
-=======
-  <img src="./assets/figures/rag_spoofing_explanation.png" width="920" alt="RAG spoofing explanation" />
->>>>>>> e6350a5 (Add Reverse QA defense layer)
-</p>
-
-A spoof chunk is not necessarily a prompt injection. It does not need to contain instructions such as “ignore previous instructions.” Instead, it is designed to look like normal evidence while being misleading or evidence-poor.
-
-The attack happens before generation:
+A spoof chunk is not necessarily a prompt injection. It does not need to say “ignore previous instructions.” Instead, it looks like a normal reference passage while being evidence-poor or misleading.
 
 ```text
 User Query
@@ -66,104 +48,51 @@ Answer may become misleading or ungrounded
 
 ## Threat Model
 
-The attacker has limited but realistic capabilities.
+| Attacker Can | Attacker Cannot |
+|---|---|
+| Insert synthetic chunks into the retrieval corpus | Modify the LLM |
+| Target likely user questions | Modify retriever weights |
+| Optimize chunks for semantic similarity | Change FAISS/BM25 internals |
+| Compete with legitimate documents during Top-K retrieval | Access ground-truth labels at inference time |
 
-<table>
-<tr>
-<td width="50%">
-
-### Attacker Can
-
-- Insert synthetic chunks into the retrieval corpus
-- Target likely user questions
-- Optimize chunks for semantic similarity
-- Compete with legitimate documents during Top-K retrieval
-
-</td>
-<td width="50%">
-
-### Attacker Cannot
-
-- Modify the LLM
-- Modify retriever weights
-- Change FAISS/BM25 internals
-- Access ground-truth labels at inference time
-
-</td>
-</tr>
-</table>
-
-The result is a corpus-level poisoning attack that manipulates what evidence reaches the LLM.
+The attack is therefore a **corpus-level retrieval poisoning attack**.
 
 ---
 
 ## System Pipeline
 
-<p align="center">
-<<<<<<< HEAD
-  <img width="1006" height="730" alt="image" src="https://github.com/user-attachments/assets/98558a6f-f22f-4daa-822a-639c6eb79762" />
-=======
-  <img src="./assets/figures/system_pipeline.png" width="920" alt="System pipeline" />
->>>>>>> e6350a5 (Add Reverse QA defense layer)
-</p>
-
-The project evaluates the full RAG path:
+The project evaluates the full retrieval path:
 
 1. Build a clean corpus from SQuAD.
 2. Split documents into chunks.
-3. Encode chunks into vector representations.
-4. Run dense, sparse, and hybrid retrieval.
+3. Encode chunks into dense/sparse retrieval representations.
+4. Run MiniLM, BM25, and Hybrid retrieval.
 5. Generate and inject spoof chunks.
-6. Apply defense filtering and reranking.
-7. Evaluate retrieval quality and spoof dominance.
-
----
-
-## End-to-End Execution Flow
-
-<p align="center">
-<<<<<<< HEAD
-  <img width="1026" height="725" alt="image" src="https://github.com/user-attachments/assets/6a868a06-39da-4419-af33-da572e510cb5" />
-=======
-  <img src="./assets/figures/sequence_diagram.png" width="920" alt="Sequence diagram" />
->>>>>>> e6350a5 (Add Reverse QA defense layer)
-</p>
-
-The sequence diagram shows where the attacker enters the system and where the defense is applied. The important detail is that the defense operates **between retrieval and generation**, before the LLM sees the final context.
+6. Retrieve a Top-20 candidate pool.
+7. Apply no-query filtering or Cross-Encoder defense.
+8. Evaluate recall and spoof dominance.
 
 ---
 
 ## Attack Design
 
-<p align="center">
-<<<<<<< HEAD
-  <img width="960" height="651" alt="image" src="https://github.com/user-attachments/assets/95e9652f-3fd0-4d14-820f-9430a2536394" />
-=======
-  <img src="./assets/figures/attack_embedding_space.png" width="920" alt="Attack embedding space illustration" />
->>>>>>> e6350a5 (Add Reverse QA defense layer)
-</p>
-
-The attack objective is not to generate a good answer. The objective is to **outrank the real evidence**.
-
-Spoof chunks are designed around three constraints:
+The attack objective is not to generate a correct answer. The objective is to **outrank the real evidence**.
 
 | Constraint | Meaning |
 |---|---|
-| **Semantic attraction** | The chunk is close to the target query in embedding space. |
-| **Evidence-poor content** | The chunk omits the gold supporting evidence. |
-| **Legitimate appearance** | The chunk reads like a normal reference passage. |
+| Semantic attraction | The chunk is close to the target query in retrieval space. |
+| Evidence-poor content | The chunk omits the gold supporting evidence. |
+| Legitimate appearance | The chunk reads like a normal reference passage. |
 
 ### Attack Families Implemented
 
-The code supports three attack families:
-
 | Family | Purpose |
 |---|---|
-| `evidence_free` | Topic-relevant background text without the answer evidence. |
+| `evidence_free` | Topic-relevant background text without answer evidence. |
 | `hypothetical_distractor` | Near-answer passages with related but off-target details. |
-| `hyde_distractor` | HyDE-style answer-like passages that omit or replace the answer-bearing detail. |
+| `hyde_attack` | HyDE-style answer-like passages that omit or replace the answer-bearing detail. |
 
-The default experimental pipeline uses:
+The final pipeline uses:
 
 ```text
 attack_mode = hypothetical_distractor
@@ -182,40 +111,29 @@ With two default styles under `hypothetical_distractor`, this produces:
 
 ## Defense Design
 
-<p align="center">
-<<<<<<< HEAD
-  <img width="914" height="647" alt="image" src="https://github.com/user-attachments/assets/9228ff28-1caf-4a15-9b53-875f87e60417" />
-=======
-  <img src="./assets/figures/defense_reranking.png" width="920" alt="Defense reranking illustration" />
->>>>>>> e6350a5 (Add Reverse QA defense layer)
-</p>
-
 The defense is retrieval-stage only. It does not modify the LLM.
 
-Instead of directly returning Top-5 retrieved chunks, the system first retrieves a larger Top-20 pool and then applies filtering and reranking.
+Instead of directly returning the first Top-5 retrieved chunks, the system retrieves a larger Top-20 pool and then applies filtering/reranking:
 
 ```text
 Retrieve Top-20
       ↓
-Suspicion Scoring
+Suspicion / static filtering baseline
       ↓
-Filtering / Penalization
+Cross-Encoder reranking
       ↓
-Cross-Encoder + Alignment Reranking
+Doc2Query / Reverse-QA style alignment signal
       ↓
-Return Top-5
+Return final Top-5
 ```
 
-Suspicion scoring uses text-only signals such as:
+The defense compares three conditions:
 
-- Query overlap
-- Mention ratio
-- Query stuffing
-- Lexical diversity
-- Generic language markers
-- Structural anomalies
-
-The query-aware defense also uses a reranking stage that combines semantic relevance, retrieval score, lexical penalties, and doc2query-style alignment.
+| Condition | Meaning |
+|---|---|
+| Attacked / No Defense | Take the attacked retrieval output directly. |
+| No-query Filter | Static chunk-only filtering without seeing the user query. |
+| CE Defense | Query-aware Cross-Encoder and alignment-based reranking. |
 
 ---
 
@@ -226,10 +144,10 @@ The query-aware defense also uses a reranking stage that combines semantic relev
 | Component | Value |
 |---|---:|
 | Dataset | SQuAD v1.1 |
-| Source documents | ~5,000 |
+| Train examples | 5,000 |
 | Validation queries | 1,000 |
 | Attacked queries | 300 |
-| Default generated spoof chunks | 600 |
+| Generated spoof chunks | 600 |
 
 ### Retrieval Systems
 
@@ -239,13 +157,13 @@ The query-aware defense also uses a reranking stage that combines semantic relev
 | BM25 | Sparse retrieval | Lexical scoring baseline |
 | Hybrid | Dense + sparse fusion | Combines semantic and lexical retrieval |
 
-### Evaluation Metrics
+### Main Metrics
 
 | Metric | Meaning |
 |---|---|
-| `Recall@5` | Whether the correct evidence appears in the final Top-5. |
+| `Recall@5` | Whether the correct evidence appears in the final Top-5. Higher is better. |
+| `Recall@20` | Whether the correct evidence appears in the Top-20 candidate pool. Higher is better. |
 | `Top-1 Spoof Win Rate` | Fraction of attacked queries where a spoof chunk ranks first. Lower is better. |
-| Defense comparison | Clean retrieval vs. attack vs. no-query filter vs. query-aware defense. |
 
 ---
 
@@ -254,78 +172,72 @@ The query-aware defense also uses a reranking stage that combines semantic relev
 ### Recall@5 Under Attack
 
 <p align="center">
-<<<<<<< HEAD
-  <img width="1835" height="876" alt="image" src="https://github.com/user-attachments/assets/b2acdf29-1d88-4c14-a3e1-273029f2191c" />
-=======
-  <img src="./assets/figures/recall_under_attack.png" width="1000" alt="Recall under attack" />
->>>>>>> e6350a5 (Add Reverse QA defense layer)
+  <img src="./assets/figures/recall_under_attack.webp" width="1000" alt="Recall@5 under attack" />
 </p>
 
-| Retriever | Clean Top-5 | Attack Naive 5/20 | No-query Filter | Query-aware Defense |
+| Retriever | Clean Top-5 | Attacked / No Defense | No-query Filter | CE Defense |
 |---|---:|---:|---:|---:|
-| MiniLM | 0.83 | 0.20 | 0.18 | 0.25 |
-| BM25 | 0.84 | 0.36 | 0.36 | 0.36 |
-| Hybrid | 0.89 | 0.35 | 0.35 | 0.36 |
+| MiniLM | 0.83 | 0.23 | 0.21 | 0.31 |
+| BM25 | 0.84 | 0.35 | 0.35 | 0.37 |
+| Hybrid | 0.89 | 0.37 | 0.37 | 0.41 |
 
-**Interpretation:** retrieval poisoning causes a large recall drop. Dense retrieval is especially vulnerable, dropping from `0.83` to `0.20` under attack. Query-aware defense improves MiniLM from `0.20` to `0.25`, but does not restore clean performance.
+**Interpretation:** retrieval poisoning causes a large Recall@5 drop. MiniLM is especially affected, falling from `0.83` to `0.23`. The CE defense improves recall, especially for MiniLM and Hybrid, but remains far below the clean baseline.
+
+---
+
+### Recall Comparison: Top-20 vs Final Defense
+
+<p align="center">
+  <img src="./assets/figures/recall_top20_vs_defense_top5.webp" width="1000" alt="Recall Top-20 versus defense Top-5" />
+</p>
+
+| Retriever | Clean Baseline Top-20 | Attack Top-20 Ceiling | CE Defense Top-5/20 |
+|---|---:|---:|---:|
+| MiniLM | 0.98 | 0.67 | 0.31 |
+| BM25 | 0.93 | 0.67 | 0.37 |
+| Hybrid | 1.00 | 0.77 | 0.41 |
+
+**Interpretation:** even when looking at the Top-20 pool, the attack pushes real evidence out for many queries. This matters because reranking cannot recover evidence that is not present in the candidate pool.
 
 ---
 
 ### Top-1 Spoof Win Rate
 
 <p align="center">
-<<<<<<< HEAD
-  <img width="1836" height="876" alt="image" src="https://github.com/user-attachments/assets/14dd9e4b-4a62-439b-af73-ce064e0faca4" />
-=======
-  <img src="./assets/figures/spoof_win_rate.png" width="1000" alt="Spoof win rate" />
->>>>>>> e6350a5 (Add Reverse QA defense layer)
+  <img src="./assets/figures/spoof_win_rate_attacked_queries.webp" width="1000" alt="Top-1 spoof win rate on attacked queries" />
 </p>
 
-| Retriever | Attack Top-20 Ceiling | Attack Naive 5/20 | No-query Filter | Query-aware Defense |
-|---|---:|---:|---:|---:|
-| MiniLM | 0.95 | 0.95 | 0.96 | 0.94 |
-| BM25 | 0.92 | 0.92 | 0.93 | 0.95 |
-| Hybrid | 0.95 | 0.95 | 0.95 | 0.93 |
+| Retriever | Attacked / No Defense | No-query Filter | CE Defense |
+|---|---:|---:|---:|
+| MiniLM | 0.96 | 0.96 | 0.96 |
+| BM25 | 0.95 | 0.95 | 0.94 |
+| Hybrid | 0.96 | 0.97 | 0.93 |
 
-**Interpretation:** spoof chunks dominate the first rank across all retrievers. Even after query-aware defense, the Top-1 spoof rate remains above `0.90`, showing that the attack remains highly effective.
-
----
-
-### Overall Summary
-
-<p align="center">
-<<<<<<< HEAD
-  <img width="2048" height="1220" alt="image" src="https://github.com/user-attachments/assets/4aba3408-3d45-4225-926d-222e64212f60" />
-=======
-  <img src="./assets/figures/summary.png" width="1000" alt="RAG spoof attack and defense summary" />
->>>>>>> e6350a5 (Add Reverse QA defense layer)
-</p>
-
-The summary view shows the central trade-off: clean retrieval performs well, but once spoof chunks are injected, both recall and ranking trust degrade sharply. The defense improves some recall values, but spoof dominance remains high.
+**Interpretation:** spoof chunks dominate the first rank across all retrieval methods. CE defense slightly reduces spoof dominance for BM25 and Hybrid, but the Top-1 spoof rate remains very high.
 
 ---
 
 ## Key Findings
 
-### 1. Retrieval Poisoning Works Before Generation
+### 1. Retrieval poisoning succeeds before generation
 
-The attack succeeds before the LLM receives context. This means improving the generator alone does not solve the problem.
+The attack succeeds at the retrieval stage, before the LLM sees the context. This means LLM-side safety alone is not enough.
 
-### 2. Dense Retrieval Is Highly Vulnerable
+### 2. Dense retrieval is highly vulnerable
 
-Embedding-optimized spoof chunks can appear semantically close to the query and outrank real evidence.
+MiniLM suffers the sharpest Recall@5 drop, from `0.83` clean to `0.23` under attack.
 
-### 3. Sparse and Hybrid Retrieval Are Not Immune
+### 3. Sparse and hybrid retrieval are not immune
 
-BM25 and Hybrid retrieval reduce some semantic vulnerability, but spoof win rates remain high.
+BM25 and Hybrid preserve more recall than MiniLM under attack, but their Top-1 spoof win rates remain above `0.90`.
 
-### 4. Reranking Has a Hard Limit
+### 4. Reranking helps, but has a hard limit
 
-If real evidence is pushed out of the retrieval pool, reranking cannot recover it.
+CE defense improves Recall@5, but it cannot fully recover clean performance. If the correct evidence is missing from the Top-20 pool, reranking cannot bring it back.
 
-### 5. Retrieval-Stage Defense Needs Stronger Signals
+### 5. No-query filtering is weak
 
-Heuristic suspicion scoring and query-aware reranking help, but they do not fully suppress adversarial chunks. A stronger solution likely requires adversarial training, better evidence verification, or retrieval models trained specifically for robustness.
+The no-query filter does not reliably distinguish spoof chunks from legitimate chunks because the spoof text is designed to look normal in isolation.
 
 ---
 
@@ -336,7 +248,7 @@ src/
 ├── attack/        # spoof generation, injection, attack evaluation
 ├── corpus/        # SQuAD corpus creation, chunking, indexing
 ├── retrieval/     # MiniLM/FAISS, BM25, Hybrid retrieval
-├── defense/       # suspicion scoring, filtering, reranking
+├── defense/       # suspicion scoring, filtering, reranking, Reverse QA
 ├── evaluation/    # metrics, LLM judge, plotting
 ├── experiments/   # threshold sweeps and additional defense experiments
 └── pipeline/      # end-to-end experiment runner
@@ -364,7 +276,7 @@ echo "OPENAI_API_KEY=YOUR_KEY" > .env
 python -m src.pipeline.run_pipeline
 ```
 
-### 4. Run attack generation only
+### 4. Generate spoof chunks only
 
 ```bash
 python -m src.attack.generate_attacks \
@@ -372,7 +284,17 @@ python -m src.attack.generate_attacks \
   --max-queries 300 \
   --candidates-per-style 3 \
   --keep-per-style 1 \
-  --use-llm
+  --use-llm \
+  --temperature 0.9
+```
+
+### 5. Evaluate retrieval results
+
+```bash
+python -m src.evaluation.evaluate_retrieval \
+  --results-path results/retrieval/minilm_attack_results.json \
+  --output-path results/retrieval/minilm_attack_top20_metrics.json \
+  --spoof-chunks-path data/processed/spoof_chunks.jsonl
 ```
 
 ---

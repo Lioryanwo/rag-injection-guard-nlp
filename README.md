@@ -25,9 +25,11 @@ then study how dense, sparse, and hybrid retrievers — and a query‑aware defe
 <p align="center">
   <img src="assets/figures/retrieval_poisoning_overview.png" width="820" alt="Retrieval poisoning concept overview" />
 </p>
+
 ---
 Example: 
 <img width="763" height="244" alt="image" src="https://github.com/user-attachments/assets/a3049ee4-1642-44f0-9a33-02fac3278331" />
+
 ---
 
 ## 📑 Table of Contents

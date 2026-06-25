@@ -38,6 +38,7 @@ then study how dense, sparse, and hybrid retrievers — and a query‑aware defe
 - [What Is RAG Spoofing?](#-what-is-rag-spoofing)
 - [Threat Model](#-threat-model)
 - [System Pipeline](#-system-pipeline)
+- [Core Components](#-core-components)
 - [Attack Design](#-attack-design)
 - [Defense Design](#-defense-design)
 - [Experimental Setup](#-experimental-setup)
@@ -131,6 +132,146 @@ The defense slots into the standard RAG flow without touching the model:
 <p align="center">
   <img src="assets/figures/sequence_diagram.png" width="860" alt="Sequence diagram of the defended RAG flow" />
 </p>
+
+---
+
+---
+
+## 🧩 Core Components
+
+The retrieval pipeline combines multiple retrieval and reranking techniques. Each component serves a different role in improving retrieval quality or defending against retrieval poisoning attacks.
+
+### BM25 (Sparse Retrieval)
+
+BM25 is a lexical retrieval algorithm that ranks documents according to exact keyword matching between the query and the document.
+
+**How it works**
+
+- Tokenizes both the query and document.
+- Computes **Term Frequency (TF)** and **Inverse Document Frequency (IDF)**.
+- Assigns higher importance to informative and less frequent terms.
+- Produces a lexical relevance score based on exact word overlap.
+
+**Strengths**
+
+- Fast and highly interpretable.
+- Performs well when important keywords appear in the query.
+
+**Limitations**
+
+- Cannot capture semantic similarity.
+- Different wording may prevent relevant documents from being retrieved.
+
+---
+
+### MiniLM Dense Retrieval
+
+MiniLM is a transformer-based sentence embedding model used for semantic retrieval.
+
+Instead of matching keywords, MiniLM embeds both the query and every document into the same vector space.
+
+**Retrieval process**
+
+1. Encode every document chunk into a dense vector.
+2. Encode the user query into the same embedding space.
+3. Retrieve the nearest chunks using cosine similarity with FAISS.
+
+**Strengths**
+
+- Captures semantic meaning rather than exact wording.
+- Retrieves relevant passages even when different vocabulary is used.
+
+**Limitations**
+
+- More vulnerable to retrieval poisoning because adversarial chunks can be optimized to occupy nearby regions in embedding space.
+
+---
+
+### Hybrid Retrieval
+
+Hybrid Retrieval combines dense semantic search with sparse lexical search.
+
+Instead of relying on a single retrieval signal, the system merges MiniLM similarity and BM25 scores into one ranking.
+
+**Pipeline**
+
+```
+MiniLM Score
+        \
+         \
+          → Score Fusion → Final Ranking
+         /
+BM25 Score
+```
+
+This provides a balance between semantic understanding and exact keyword matching, making retrieval generally more robust than either method alone.
+
+---
+
+### FAISS Vector Search
+
+FAISS (Facebook AI Similarity Search) is the vector database used for dense retrieval.
+
+Rather than comparing a query against every document individually, FAISS performs efficient nearest-neighbor search over dense embeddings, allowing semantic retrieval to scale to large document collections with minimal latency.
+
+---
+
+### Cross-Encoder Reranking
+
+The Cross-Encoder is used as a second-stage reranker.
+
+Unlike dense retrieval models that encode the query and document independently, the Cross-Encoder processes them **together**, allowing token-level interactions before predicting relevance.
+
+**Pipeline**
+
+```
+Top-20 Retrieved Chunks
+          ↓
+Cross-Encoder
+          ↓
+Relevance Score
+          ↓
+Re-ranked Top-20
+```
+
+Because Cross-Encoders are computationally expensive, they are applied only to the retrieved candidate pool rather than the entire corpus.
+
+---
+
+### Doc2Query Answerability Signal
+
+Semantic similarity alone does not guarantee that a document actually contains the information needed to answer a user's question.
+
+To address this limitation, our defense estimates a document's **answerability**.
+
+Instead of asking:
+
+> "Is this document similar to the query?"
+
+the system asks:
+
+> "What questions could this document realistically answer?"
+
+Documents whose implied questions closely align with the user's query receive a higher answerability score.
+
+This additional signal helps distinguish genuine evidence-bearing documents from semantically attractive but evidence-poor spoof passages.
+
+---
+
+### Reverse QA Defense
+
+Reverse QA is the main query-aware defense proposed in this project.
+
+For each retrieved chunk, the system:
+
+1. Generates several hypothetical questions that the chunk could answer.
+2. Compares those generated questions with the original user query.
+3. Computes a Reverse-QA relevance score.
+4. Combines this score with the Cross-Encoder score to produce the final ranking.
+
+Unlike static filters that inspect documents in isolation, Reverse QA evaluates whether a retrieved document is actually capable of answering the user's question.
+
+This significantly improves the system's ability to identify semantically convincing yet unsupported spoof documents while preserving legitimate evidence.
 
 ---
 

@@ -258,23 +258,6 @@ This additional signal helps distinguish genuine evidence-bearing documents from
 
 ---
 
-### Reverse QA Defense
-
-Reverse QA is the main query-aware defense proposed in this project.
-
-For each retrieved chunk, the system:
-
-1. Generates several hypothetical questions that the chunk could answer.
-2. Compares those generated questions with the original user query.
-3. Computes a Reverse-QA relevance score.
-4. Combines this score with the Cross-Encoder score to produce the final ranking.
-
-Unlike static filters that inspect documents in isolation, Reverse QA evaluates whether a retrieved document is actually capable of answering the user's question.
-
-This significantly improves the system's ability to identify semantically convincing yet unsupported spoof documents while preserving legitimate evidence.
-
----
-
 ## 💥 Attack Design
 
 The attack objective is **not** to produce a correct answer. It is to **outrank the real evidence** while staying invisible to naive filters.

@@ -258,6 +258,22 @@ This additional signal helps distinguish genuine evidence-bearing documents from
 
 ---
 
+### Reverse QA Defense
+
+The retriever first returns the **Top-20 candidate chunks** that appear most relevant to the user's query. However, high retrieval similarity does not necessarily mean that these chunks actually contain the evidence needed to answer the question.
+
+Reverse QA therefore asks a different question:
+
+> **"If this chunk were the only document available, what questions could it actually answer?"**
+
+For each of the Top-20 retrieved chunks, the system generates several hypothetical questions based on the chunk itself. These generated questions are then compared with the user's original query to estimate whether the chunk genuinely contains answer-bearing evidence.
+
+The resulting Reverse QA score is combined with the Cross-Encoder relevance score during reranking, allowing the system to promote chunks that can truly answer the user's question while demoting semantically attractive but evidence-poor spoof chunks.
+
+Since Reverse QA operates only on the retrieved Top-20 candidates, it cannot recover relevant documents that were never retrieved in the first place. Its role is to improve the ranking within the existing candidate pool before returning the final Top-5 results.
+
+---
+
 ## 💥 Attack Design
 
 The attack objective is **not** to produce a correct answer. It is to **outrank the real evidence** while staying invisible to naive filters.

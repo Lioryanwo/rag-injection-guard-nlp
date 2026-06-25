@@ -413,7 +413,7 @@ A query‑aware **suspicion score** flags retrieval‑obstruction signals — hi
 ### Top‑1 spoof win rate (attacked queries only)
 
 <p align="center">
-  <img src="assets/figures/spoof_win_rate_attacked_queries.webp" width="950" alt="Top-1 spoof win rate" />
+  <img width="1045" height="450" alt="image" src="https://github.com/user-attachments/assets/cd409f97-34d3-4257-9717-fcf4938b5c87" />
 </p>
 
 | Retriever | Attacked / No Defense | No‑query Filter | CE Defense |
